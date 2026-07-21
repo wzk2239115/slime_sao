@@ -67,9 +67,17 @@ rm -f megatron.patch
 # ====================================================================
 # Step 3: install Megatron-Bridge (slime 用的桥接层)
 # ====================================================================
+# 注意: Megatron-Bridge 的 .gitmodules 把 Megatron-LM 作为 submodule,
+# 但 pyproject.toml 显示包路径在 src/megatron/bridge/, submodule 只是
+# 开发参考, 运行时不需要. 所以用本地 clone + 跳过 submodule 的方式装,
+# 避免 pip install git+... 卡在 git submodule update.
 echo ""
-echo "=== Step 3: install Megatron-Bridge ==="
-pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
+echo "=== Step 3: install Megatron-Bridge (skip submodule) ==="
+MB_DIR="/tmp/Megatron-Bridge"
+rm -rf "${MB_DIR}"
+git clone -b bridge https://github.com/radixark/Megatron-Bridge.git "${MB_DIR}"
+pip install "${MB_DIR}" --no-deps --no-build-isolation
+python -c "from megatron.bridge import AutoBridge; print('✅ Megatron-Bridge ok')"
 
 # ====================================================================
 # Step 4: install slime Python 依赖
