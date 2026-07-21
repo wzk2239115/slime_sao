@@ -17,6 +17,19 @@ MEGATRON_DIR="${MEGATRON_DIR:-/root/Megatron-LM}"
 MEGATRON_COMMIT="1dcf0dafa884ad52ffb243625717a3471643e087"   # slime Dockerfile 锁定的版本
 
 # ====================================================================
+# Step 0: 确保 slime 主仓库已 clone (后面要用它的 patch)
+# ====================================================================
+echo "=== Step 0: 检查 slime 主仓库 ==="
+if [[ ! -d "${SLIME_DIR}" ]]; then
+    echo "slime 主仓库不存在, 自动跑 setup_a100.sh..."
+    bash "$(dirname "$0")/setup_a100.sh"
+fi
+ls "${SLIME_DIR}/docker/patch/latest/megatron.patch" || {
+    echo "❌ slime 主仓库 patch 文件不存在"
+    exit 1
+}
+
+# ====================================================================
 # Step 1: clone + checkout Megatron-LM (slime 适配的 commit)
 # ====================================================================
 echo "=== Step 1: clone Megatron-LM @ ${MEGATRON_COMMIT} ==="
