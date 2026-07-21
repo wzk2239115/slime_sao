@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.cache/
+.ipynb_checkpoints/
+*.log
+
+# 本地输出 (含蒸馏数据, 体积大, 不入库)
+distilled_*.jsonl
+eval_baseline.log
+
+# IDE
+.vscode/
+.idea/

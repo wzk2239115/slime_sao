@@ -1,0 +1,220 @@
+# SAO (Single-rollout Asynchronous Optimization) — Reproduction TODO on slime
+
+本文档基于 `SAO/SAO.md` 论文方法 + slime 现有能力梳理出的复现清单。
+每一项都标注了「slime 现状」与「需要做的改动」，并给出具体落点（文件 / 参数）。
+
+---
+
+## 0. 论文方法速览（与 slime 概念对齐）
+
+| SAO 组件                           | 数学/做法                                                                                              | slime 现有对应                                                                                  |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| DIS（直接双向重要性采样）          | `r_t = π_θ / π_rollout`，丢掉 `π_old`；落在 `[1-ε_l, 1+ε_h]` 之外的 token **梯度置 0**（mask，不是 clip） | `--use-rollout-logprobs` 已用 π_rollout 当 old；`--use-tis` + `--custom-tis-function-path` 可注入 mask 逻辑 |
+| Single-rollout                     | 每个 prompt 只采样 1 条轨迹，来一条训一条                                                              | `--n-samples-per-prompt 1`（默认即 1）                                                          |
+| 异步管线（rollout/train 解耦）     | rollout 完成立刻进训练，不卡 group 屏障                                                                | `train_async.py` + `--rollout-function-path slime.rollout.fully_async_rollout.generate_rollout_fully_async` |
+| Faster Value Update (TTUR, K=2)    | 每次策略更新对应 K=2 次 critic 更新                                                                    | **无**，需新增 `--critic-train-epoch` 参数并在 `train_critic` 里循环                            |
+| Frozen-Attention critic            | critic 只训 MoE，冻结 attention                                                                        | `--freeze-params-name-list` 已支持（regex），但需按 role 配置（critic only）                    |
+| Skip-Observation Token-level GAE   | 在 `[a_i,end → a_{i+1,0}]` 间跨过 observation token 算 δ                                              | **无**，需扩展 `vanilla_gae`/`chunked_gae`                                                      |
+| Length-adaptive GAE                | `λ_policy = 1 − 1/(α·L)`，`α=1.5`                                                                      | **无**，当前 `--lambd` 是全局标量；需 per-sample λ                                              |
+| Scaling Value Pretraining          | 大规模价值模型冷启动预训练                                                                             | **无独立管线**；可复用 slime train.py + `--loss-type value_loss`，但需配套数据                  |
+| ε_low=0.3 / ε_high=5.0 (TIR)       | DIS 双向 clip 边界                                                                                     | 已有 `--eps-clip` / `--eps-clip-high`                                                           |
+
+---
+
+## 1. 必须新增的算法层改动（核心 5 项）
+
+### 1.1 DIS：mask-to-zero 的 token-level 双向裁剪
+**目标**：在 `policy_loss_function` 里，把 `ratio` 不在 `[1-ε_l, 1+ε_h]` 区间的 token **梯度整体置 0**（论文 Eq.3 的 `f(x;ε_l,ε_h)`）。
+
+**slime 现状**：
+- `compute_policy_loss` (`slime/utils/ppo_utils.py:124`) 只做 PPO 风格的 `max(pg1, pg2)`，**未做硬 mask**。
+- `icepop_function` (`slime/backends/megatron_utils/loss.py:855`) 已经实现了 `[tis_clip_low, tis_clip]` 区间外置 0 的逻辑，但它**额外乘以 ratio**（变成 `-ratio²·A`），与 SAO Eq.(1) 的 `-f(r)·A·log π_θ` 不一致。
+
+**实现方案**（推荐 A）：
+- A. 新增 `dis_tis_function(args, pg_loss, train_log_probs, rollout_log_probs, loss_masks, **kw)`：
+  - `ratio = exp(train_log_probs - rollout_log_probs)`
+  - `mask = (ratio >= args.tis_clip_low) & (ratio <= args.tis_clip)`
+  - `pg_loss = pg_loss * mask.float()`（注意：`pg_loss` 已含 `-ratio·A`，所以最终梯度是 `-f(r)·A·∇log π_θ`，正好等于 SAO Eq.(1)）
+  - 返回 metrics（clip_ratio、tis_abs 等）
+- 把这个函数放在 `slime/backends/megatron_utils/loss.py` 或新建 `slime/backends/megatron_utils/tis.py`，通过 `--custom-tis-function-path slime.backends.megatron_utils.loss.dis_tis_function` 启用。
+
+**验证点**：在 `tests/` 下加单测，确认 `pg_loss[mask=False]` 真为 0、`pg_loss[mask=True]` 等于 `-ratio·A`。
+
+### 1.2 Faster Value Update（critic 每 actor 步训 K 次，K=2）
+**目标**：每个 rollout batch 中，critic 在 actor 之前/之后多训 K-1 次。
+
+**slime 现状**：`train_critic` (`slime/backends/megatron_utils/actor.py:386`) 只跑一次 `train(...)`。
+
+**实现方案**：
+- 在 `slime/utils/arguments.py` 新增 `--critic-train-epoch`（默认 1，SAO 取 2）。
+- 修改 `MegatronTrainRayActor.train_critic`：把 `train(...)` 包成 `for _ in range(args.critic_train_epoch): train(...)`。
+- 注意 critic 第一次 forward 得到的 `old_values` 应保持不变（用作 value clip 的参考），所以**只循环 optimizer step，不重新 forward**。具体地：
+  - 把 `forward_only(get_values, ...)` 提到循环外；
+  - 循环内只重复 `train(...)`，避免 `compute_advantages_and_returns` 被重复调用导致 `returns` 漂移。
+- 文档同步：`docs/` 提一句 TTUR 用法。
+
+### 1.3 Frozen-Attention Critic
+**目标**：critic 只更新 MoE/expert 参数，attention 全冻结。
+
+**slime 现状**：`--freeze-params-name-list`（`slime/backends/megatron_utils/model_provider.py:281`）支持 regex 冻结，但当前是**全局**生效，actor 也会被冻。
+
+**实现方案**：
+- A 方案（推荐）：通过 `--megatron-config-path` 的 role-tagged YAML，给 critic 单独配置 `freeze_params_name_list: ["self_attention", "attention"]`。验证 slime 是否真的在 critic 实例化时读 role-specific args（`slime/utils/arguments.py:parse_megatron_role_args` + `slime/ray/placement_group.py:193`）。
+- B 方案：在 `freeze_model_params` 里加 `role` 判断，仅当 `role == "critic"` 时应用冻结列表。
+- 加日志：训练时打印 critic 各层 `requires_grad` 统计，确认 attention 已冻。
+
+### 1.4 Skip-Observation Token-level GAE（multi-turn agentic 关键）
+**目标**：在 `[a_{i,end}, o_{i,*}, a_{i+1,0}]` 这种 action→obs→action 段，GAE 的 δ 直接跳过 obs：
+`δ = r + γ·V(a_{i+1,0}) − V(a_{i,N})`，且 `Â(a_{i,N}) = δ + γλ·Â(a_{i+1,0})`（论文 Eq.4-5）。
+
+**slime 现状**：
+- `vanilla_gae` / `chunked_gae` (`slime/utils/ppo_utils.py:471+`) 把所有 response token 当作连续序列算 δ；obs token 的 value 会被无意义地引入。
+- slime multi-turn 已经有 per-token `loss_mask`（`slime/utils/mask_utils.py`）：obs 段 mask=0，action 段 mask=1，正好能用来识别 action 边界。
+
+**实现方案**：
+- 新增 `skip_obs_gae(rewards, values, loss_masks, gamma, lambd)`：在 `vanilla_gae` 基础上把 `next_value` 从 `values[:, t+1]` 改为「下一个 mask=1 的 token 的 value」；当当前 token 是某 action 的最后一个 mask=1 token 时，跳到下一个 action 起点。
+- 在 `compute_advantages_and_returns` (`slime/backends/megatron_utils/loss.py:661`) 的 `args.advantage_estimator == "ppo"` 分支里，根据 `args.use_skip_obs_gae` 选择 `vanilla_gae` / `chunked_gae` / `skip_obs_gae`。
+- 新增参数 `--use-skip-obs-gae`（action=False 默认）。
+- 单测：构造 `[a,o,a]` 序列，确认 obs 段的 advantage 不被传播。
+
+### 1.5 Length-Adaptive GAE（λ_policy = 1 − 1/(α·L)）
+**目标**：每个 sample 按其 response 长度 L 自适应 λ；论文 `α=1.5`、`λ_critic=1`。
+
+**slime 现状**：`--lambd` 全局标量；`get_advantages_and_returns_batch` 接受单一 `lambd`。
+
+**实现方案**：
+- 新增 `--gae-alpha`（float，默认 None）；当设置时，按 batch 内每个 sample 的 `response_length` 计算 `lambd_i = 1 - 1/(alpha * L_i)`。
+- 在 `get_advantages_and_returns_batch` 里支持 `lambd: list[float] | float`（list 即 per-sample）。
+- `vanilla_gae` / `chunked_gae` 需要改造为支持 per-row λ（在 `w = gamma * lambd` 处广播为 `[B,1]`）。
+- `λ_critic=1` 通过给 critic 路径单独传 `lambd=1` 实现（或在 `value_loss_function` 里强制用 returns，不依赖 critic GAE λ）。
+
+---
+
+## 2. 管线 & 配置层改动（必须但较轻）
+
+### 2.1 单 rollout + 全异步驱动
+直接复用：
+```bash
+python3 train_async.py \
+  --rollout-function-path slime.rollout.fully_async_rollout.generate_rollout_fully_async \
+  --rollout-global-dataset \
+  --n-samples-per-prompt 1 \
+  --disable-grpo-std-normalization \
+  --advantage-estimator ppo
+```
+确认点：`fully_async_rollout.generate_and_rm_group` 默认按 `n_samples_per_prompt` 切组，`n=1` 时每「组」就是 1 条轨迹 → 即 single-rollout。需在 README/scripts 里写明。
+
+### 2.2 DIS 启用参数
+```bash
+--use-rollout-logprobs \
+--use-tis \
+--custom-tis-function-path slime.backends.megatron_utils.loss.dis_tis_function \
+--tis-clip-low 0.7 \
+--tis-clip 5.0
+```
+（TIR 数学任务 ε_low=0.3/ε_high=5.0；coding agent ε_low=0.8/ε_high=3.0。）
+
+需要核查 `arguments.py:1801` 的断言：`use_rollout_logprobs` 与 `use_tis` 现在互斥，要让 DIS 同时用（DIS 同时是「用 rollout logprob」+「tis-style mask」），需要放开这个断言或新增独立 `--use-dis` 开关。**推荐**：新增 `--use-dis`，在 `policy_loss_function` 里直接走 DIS 分支，避免和现有 TIS 语义打架。
+
+### 2.3 Critic 配置
+- `--advantage-estimator ppo` 触发 `use_critic=True`。
+- `--num-critic-only-steps` ≥ 10（论文 10 步 warmup）→ slime 已有。
+- `--lr 5e-6`（critic 用，通过 megatron-config-path 给 critic 单独配 lr；actor lr=1e-6）。
+- `--critic-train-epoch 2`（新增，见 1.2）。
+
+### 2.4 冻结 attention（见 1.3）
+通过 `--megatron-config-path` 提供 YAML，critic role 加 `freeze_params_name_list`。
+
+---
+
+## 3. 数据 / 任务侧改动（实验本身需要）
+
+### 3.1 TIR（Tool-Integrated Reasoning，数学）
+- 模型：Qwen3-30B-A3B-Thinking-2507 + GPT-OSS-120B 蒸出来的 SFT ckpt（论文 §4.1）。
+- 数据：TIR 训练数据需自备；slime 侧需要：
+  - 一个 multi-turn rollout 函数，能跑「思考 + python tool call + obs」的循环（参考 `examples/retool/`）。
+  - reward：数学答案正确性（`slime/rollout/rm_hub/math_utils.py` 已有）。
+  - context：128k；`--rollout-max-context-len 131072`。
+- 评估：AIME2025 / BeyondAIME / HMMT-Nov-2025 / IMOAnswerBench（数据自备）。
+
+### 3.2 SWE-Bench Verified（coding agent）
+- 参考 `examples/coding_agent_rl/`（claude_code/OpenHands scaffold）。
+- 改 `--rollout-max-context-len 131072`、interaction turn 上限 300。
+- `--eps-clip 0.8 --eps-clip-high 3.0`（coding）。
+- reward：SWE-bench test pass（已有 `examples/coding_agent_rl/swe.py`）。
+
+### 3.3 价值模型预训练（Scaling Value Pretraining）
+**slime 暂无独立管线**。最小可行：
+1. 用 SFT 阶段产出的 trajectory（含最终 reward）构造 `(tokens, returns)` 数据集；
+2. 写一个 `pretrain_value.py`，加载 critic 模型，loss 用 `value_loss_function`，对 returns 做 MSE；
+3. 大规模数据（论文未公开具体规模，需自己定）。
+
+或：先跑一段 GRPO（带 critic）若干步，把 critic ckpt 作为 SAO 的起点（次优）。
+
+### 3.4 Online Learning Simulation（写作风格切换）
+- 论文 §4.5 的 controlled 实验：cute ↔ chuunibyou ↔ classical 三阶段切换。
+- 需要组件：
+  - 风格 prompt 数据集；
+  - LLM judge reward（用 `--custom-rm-path` 注入 GLM-4.7 API 调用，参考 `.claude/skills/add-reward-function/SKILL.md`）；
+  - 训练循环里动态切换 system prompt（按 step 数切换 phase）→ 需要一个 `data_source` 子类或 dynamic filter（参考 `.claude/skills/add-dynamic-filter/SKILL.md`）。
+- 这个是论文独有的「演示性」实验，**优先级低于主结果**。
+
+---
+
+## 4. 验证 / 度量（让结果可信）
+
+### 4.1 训练动态 metrics（论文 Figure 4）
+- **Explained Variance**：`EV = 1 − Var(R−V)/Var(R)`，每步记录。slime 现有 `train_metric_utils.py` 没有这个，需新增。
+- **Critic gradient norm**（frozen vs full）：slime 已能记录 grad norm，确认 critic 路径单独记录。
+- **Token-level clip ratio**：DIS mask 比例，在 `dis_tis_function` 里 return `tis_clipfrac`，会自动进 wandb。
+
+### 4.2 消融组（论文 Table 3/4）
+按以下组各跑一遍（建议数学任务，因为最便宜）：
+- SAO full
+- SAO w/o Faster value（`--critic-train-epoch 1`）
+- SAO w/o Frozen attention（critic 不冻结）
+- Vanilla VAPO（不开 DIS，其他保持）→ 应在 ~90 step 训崩
+- Running-mean baseline（写一个 `--advantage-estimator reinforce_plus_plus_baseline` 的滑动窗口变体，或新加 `--use-running-mean-baseline`）
+
+### 4.3 主结果对照
+- Table 1：AIME2025 / BeyondAIME / HMMT / IMOAnswerBench（SAO vs GRPO vs GRPO+DIS）
+- Table 2：SWE-Bench Verified（SAO vs GRPO+DIS）
+
+---
+
+## 5. 落地优先级（建议 sprint 切分）
+
+### Sprint 1（算法内核，1–2 天）
+- [ ] 1.1 `dis_tis_function` + 单测
+- [ ] 1.2 `--critic-train-epoch` 参数 + train_critic 循环
+- [ ] 1.3 通过 megatron-config-path 给 critic 加 freeze list（无代码改动，只写 YAML）
+- [ ] 1.4 `skip_obs_gae` + 单测
+- [ ] 1.5 per-sample length-adaptive λ
+
+### Sprint 2（端到端跑通，2–3 天）
+- [ ] 2.1 `examples/sao/` 新目录：TIR math 的 run script（参考 `examples/retool/retool_qwen3_4b_rl.sh`）
+- [ ] 2.2 小模型（Qwen3-30B-A3B 太贵，先用 0.5B/1.7B 跑通正确性）
+- [ ] 2.3 接入 critic TTUR + frozen attn 的完整配置
+- [ ] 2.4 跑 50–100 step smoke test，确认训练稳定、metrics 有值
+
+### Sprint 3（主实验，1–2 周）
+- [ ] 3.1 Qwen3-30B-A3B + TIR 数据上跑 SAO / GRPO / GRPO+DIS 三组
+- [ ] 3.2 SWE-Bench Verified 一组
+- [ ] 3.3 消融 5 组（Table 3/4）
+- [ ] 3.4 评估 4 个数学 benchmark + SWE-Bench
+
+### Sprint 4（可选 / 论文亮点）
+- [ ] 4.1 Online learning simulation（写作风格）
+- [ ] 4.2 Step-level vs token-level GAE 对照（论文 Appendix A.1）
+- [ ] 4.3 Value pretraining 数据 scaling 曲线
+
+---
+
+## 6. 风险 / 待确认点
+
+- **DIS 与现有 TIS 互斥断言**（`arguments.py:1802`）：必须先解决（见 2.2）。
+- **critic 多次训的内存**：`train_critic` 循环 K 次不重新 forward 即可避免显存翻倍，但需验证 optimizer state 没问题。
+- **skip-obs GAE 与 CP（context parallel）交互**：`get_advantages_and_returns_batch` 在 CP>1 时会先 all-gather；新 GAE 需在 gather 后的全长 tensor 上算，否则跨 CP 边界的 action 会被切断。建议直接在 `full_values_list` 上做（同当前 chunked_gae）。
+- **value pretraining 数据**：论文没公开，需要自己造或用 GRPO critic ckpt 替代。
+- **Qwen3-30B-A3B-Thinking-2507 ckpt & GPT-OSS-120B TIR 蒸馏数据**：复现最大瓶颈，需团队已有资源；如缺，可降级到 Qwen2.5-Math 等开源 math 模型做 trend 验证。
+- **OpenHands / claude_code scaffold**：`examples/coding_agent_rl/` 默认用 claude_code，论文用 OpenHands。需评估是否切到 OpenHands（`slime/agent/harness/` 已有 codex/claude_code，OpenHands 需自己加 harness）。

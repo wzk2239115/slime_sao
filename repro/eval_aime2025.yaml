@@ -1,0 +1,41 @@
+# SAO 论文复现: AIME2025 eval 配置
+#
+# 对应论文 Table 1 中 "Qwen3-30B-A3B w/o python" = 85.0 这一行.
+# 用 Qwen3-30B-A3B (无 SFT, 无 RL) 直接评测 AIME2025 (30 题).
+#
+# 评测方式 (论文 §4.1):
+#   - top-p = 1.0
+#   - temperature = 1.0
+#   - max_response_len = 32768  (128k context 内, 留足 thinking 空间)
+#   - n_samples_per_eval_prompt = 16  (论文对 AIME2025 取 16 次均值降方差)
+#   - reward: deepscaler (rule-based, 提取 \boxed{} 对比 answer)
+#
+# 注意: Qwen3-30B-A3B 基础模型可能不输出 </think> 标签,
+# deepscaler.py:5-10 要求 response 含 </think> 或 "###Response",
+# 否则直接判 0. 基础模型建议用 rm_type=math (更宽松).
+
+eval:
+  defaults:
+    apply_chat_template: true
+    temperature: 1.0       # 论文取 1.0
+    top_p: 1.0             # 论文取 1.0
+    max_response_len: 32768
+    n_samples_per_eval_prompt: 4   # 论文取 16; 单卡显存/时间吃紧可降到 4 或 1
+    rm_type: math          # 比 deepscaler 更宽松, 不强制 </think>
+
+  datasets:
+    - name: aime2025_I
+      path: /home/wzk/datasets/AIME2025/slime/aime2025-I.jsonl
+      input_key: input
+      label_key: label
+
+    - name: aime2025_II
+      path: /home/wzk/datasets/AIME2025/slime/aime2025-II.jsonl
+      input_key: input
+      label_key: label
+
+    # 整体一次评 (I + II 合并 30 题)
+    - name: aime2025_all
+      path: /home/wzk/datasets/AIME2025/slime/aime2025-all.jsonl
+      input_key: input
+      label_key: label
