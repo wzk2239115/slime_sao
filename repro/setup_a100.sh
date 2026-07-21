@@ -2,10 +2,10 @@
 # 在 4×A100 机器上 setup SAO 复现环境
 #
 # 用法 (在 slime_sao/ 的父目录执行):
-#     bash slime_sao/SAO/repro/setup_a100.sh
+#     bash slime_sao/repro/setup_a100.sh
 #
 # 前提: 当前机器已经有以下目录
-#   - slime_sao/                          # 本仓库
+#   - slime_sao/                              # 本仓库 (根目录就是 SAO 复现代码)
 #   - slime_sao/models/Qwen3-30B-A3B-Thinking-2507/
 #   - slime_sao/datasets/AIME2025/
 
@@ -32,9 +32,10 @@ fi
 cd slime
 
 echo ""
-echo "=== Step 3: 软链 SAO 复现代码到 slime/SAO ==="
+echo "=== Step 3: 软链 slime_sao → slime/SAO ==="
+# slime_sao 仓库根目录就是 SAO 复现代码, 软链成 slime 主仓库下的 SAO/
 if [[ ! -L SAO && ! -d SAO ]]; then
-    ln -s "${WORKDIR}/slime_sao/SAO" SAO
+    ln -s "${WORKDIR}/slime_sao" SAO
 elif [[ -L SAO ]]; then
     echo "SAO 软链已存在: $(readlink SAO)"
 fi
@@ -57,5 +58,5 @@ python -c "import megatron; print('megatron ok')" 2>&1 || echo "⚠️ Megatron-
 echo ""
 echo "==================================================================="
 echo "✅ Setup 完成. 下一步:"
-echo "  bash SAO/repro/run_eval_a100.sh"
+echo "  bash ${WORKDIR}/slime/SAO/repro/run_eval_a100.sh"
 echo "==================================================================="
