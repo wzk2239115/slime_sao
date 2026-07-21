@@ -98,6 +98,10 @@ MISC_ARGS=(
 NUM_GPUS=4
 export MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
 
+# 算力机常走 HTTP proxy, 必须排除 localhost 否则 ray client 连不上本地 dashboard
+export no_proxy="127.0.0.1,localhost,${no_proxy:-}"
+export NO_PROXY="$no_proxy"
+
 pkill -9 sglang 2>/dev/null || true
 sleep 2
 ray stop --force 2>/dev/null || true
