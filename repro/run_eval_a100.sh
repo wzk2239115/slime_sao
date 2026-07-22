@@ -111,15 +111,13 @@ ray start --head --node-ip-address "${MASTER_ADDR}" \
    --num-gpus "${NUM_GPUS}" --disable-usage-stats \
    --dashboard-host=0.0.0.0 --dashboard-port=8265
 
-# PYTHONPATH 必须包含 Megatron-LM 和 slime 主仓库
-# 按实际安装位置改
-MEGATRON_PATH="${MEGATRON_PATH:-/root/Megatron-LM}"
-RUNTIME_ENV_JSON="{
-  \"env_vars\": {
-    \"PYTHONPATH\": \"${MEGATRON_PATH}:${SLIME_DIR}\",
-    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\"
+# ray worker 进程会继承当前 shell 的环境变量 (PYTHONPATH, LD_LIBRARY_PATH, PATH 等)
+# run_env.sh 已经设好这些, 所以 runtime_env 只需要额外设 CUDA 相关变量
+RUNTIME_ENV_JSON='{
+  "env_vars": {
+    "CUDA_DEVICE_MAX_CONNECTIONS": "1"
   }
-}"
+}'
 
 # ============ 提交 eval-only job ============
 LOG_FILE="${WORKDIR}/slime_sao/eval_baseline_$(date +%Y%m%d_%H%M%S).log"
