@@ -90,11 +90,50 @@ length-adaptive λ) 在 slime pipeline 上能端到端跑通.
 
 3. **Tier 2** 需要团队级资源, 不在单机复现范围.
 
+## A100 box 环境 (chroot 方式, 无需 docker daemon)
+
+slime 官方依赖 (torch + TE + megatron + sglang) 在 stock torch 下装不上,
+直接用 `slimerl/slime:latest` docker image 解压成 rootfs, chroot 进去即可.
+
+**首次部署** (有 `slime_latest.tar`):
+```bash
+# 把 docker save 出来的 tar 放到 slime_sao/ 下
+bash repro/setup_env.sh     # 解压 tar 成 rootfs (20-40 分钟, 只跑一次)
+```
+
+**日常使用**:
+```bash
+# 进交互 shell (退出: exit)
+bash repro/run_env.sh
+
+# 在 chroot 内直接跑命令
+bash repro/run_env.sh python -c "import torch; print(torch.__version__)"
+bash repro/run_env.sh nvidia-smi
+```
+
+**换机器迁移**:
+```bash
+# 旧机器
+rsync -a /home/jovyan/h800fast/wangzekai/slime_rootfs 新机器:/同路径/
+
+# 新机器
+git clone https://github.com/wzk2239115/slime_sao.git
+bash slime_sao/repro/run_env.sh
+```
+
+`run_env.sh` 会自动:
+- bind mount `/proc /sys /dev /home/jovyan/h800fast` 到 chroot
+- 设好 PATH / LD_LIBRARY_PATH / PYTHONPATH
+- chroot 进去 (CUDA / GPU 全可用)
+
 ## 文件清单
 
 ```
 SAO/repro/
-├── 01_convert_aime2025.py   # AIME2025 数据 → slime eval schema (question→input, answer→label)
+├── 01_convert_aime2025.py   # AIME2025 数据 → slime eval schema
 ├── eval_aime2025.yaml       # eval-config: top-p=1, T=1, max_resp=32k, n=4
-└── run_eval_baseline.sh     # eval-only 启动脚本 (num_rollout=0)
+├── run_eval_baseline.sh     # eval-only 启动脚本 (单机 dev, num_rollout=0)
+├── run_eval_a100.sh         # eval-only 启动脚本 (A100, TP=4, EP=4)
+├── setup_env.sh             # 首次: 解压 slime docker tar 成 chroot rootfs
+└── run_env.sh               # 日常: bind mount + chroot 进入 slime 环境
 ```
