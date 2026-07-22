@@ -54,17 +54,45 @@ print('=== 解压完成 ===', flush=True)
 PYEOF
 fi
 
-# 清理 docker image 残留的 /dev /proc /sys (避免 bind mount 冲突)
+# 清理 docker image 残留的 /dev /proc /sys (避免 mount 冲突)
 echo "=== 清理 mount 点 ==="
 rm -rf "$ROOTFS/dev" "$ROOTFS/proc" "$ROOTFS/sys"
 mkdir -p "$ROOTFS/dev" "$ROOTFS/proc" "$ROOTFS/sys"
 
-# 验证关键路径
+# 把 cudnn/nccl 库软链到 cuda/lib64 (统一 LD_LIBRARY_PATH 入口)
+echo "=== 软链 cudnn/nccl 到 cuda/lib64 ==="
+for lib in libcudnn libcudnn_engines_precompiled libcudnn_graph libcudnn_heuristic \
+           libcudnn_ops libcudnn_adv libcudnn_cnn libcudnn_engines_runtime_compiled \
+           libnccl; do
+    for f in "$ROOTFS/usr/lib/x86_64-linux-gnu/${lib}"*; do
+        [ -e "$f" ] && ln -sf "$f" "$ROOTFS/usr/local/cuda/lib64/" 2>/dev/null || true
+    done
+done
+
+# 关键: 升级 numpy 1.x -> 2.x (torch 2.9 编译时用 numpy 2.x, image 装的是 1.x)
+SITE="$ROOTFS/usr/local/lib/python3.12/dist-packages"
+if [ -d "$SITE/numpy" ] && ! "$ROOTFS/usr/bin/python3" -c "import numpy; exit(0 if int(numpy.__version__.split('.')[0])>=2 else 1)" 2>/dev/null; then
+    echo "=== 升级 numpy 1.x -> 2.x (torch 2.9 + TE 需要) ==="
+    LD_LIBRARY_PATH="$ROOTFS/usr/local/cuda/lib64:$ROOTFS/usr/local/nvidia/lib64" \
+        "$ROOTFS/usr/bin/python3" -m pip install "numpy>=2,<3" \
+        --target "$SITE" --upgrade --no-deps
+fi
+
+# 验证关键依赖
 echo ""
 echo "=== 验证 ==="
 echo "ROOTFS: $ROOTFS"
-ls "$ROOTFS/root/slime" >/dev/null 2>&1 && echo "✅ /root/slime 存在" || echo "⚠️  /root/slime 不存在"
-ls "$ROOTFS"/usr/local/lib/python3.*/dist-packages/ 2>/dev/null | grep -E "^(torch|transformer_engine|megatron|sglang)" | head -5
+LD_LIBRARY_PATH="$ROOTFS/usr/local/cuda/lib64:$ROOTFS/usr/local/nvidia/lib64" \
+PYTHONPATH="$SITE:$ROOTFS/root/slime:$ROOTFS/root/Megatron-LM" \
+"$ROOTFS/usr/bin/python3" -c "
+import torch, transformer_engine, transformer_engine.pytorch as te
+import megatron.core, numpy as np
+print('✅ torch', torch.__version__)
+print('✅ TE', transformer_engine.__version__)
+print('✅ numpy', np.__version__)
+print('✅ megatron', megatron.core.__version__)
+print('✅ cuda', torch.cuda.is_available(), 'GPU count:', torch.cuda.device_count())
+" || echo "⚠️  验证失败, 检查上面的输出"
 
 echo ""
 echo "✅ 完成. 进入环境:"

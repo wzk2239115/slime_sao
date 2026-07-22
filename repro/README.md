@@ -106,10 +106,14 @@ bash repro/setup_env.sh     # 解压 tar 成 rootfs (20-40 分钟, 只跑一次)
 # 进交互 shell (退出: exit)
 bash repro/run_env.sh
 
-# 在 chroot 内直接跑命令
+# 在配置好的环境里跑命令 (torch/TE/megatron 都能 import)
 bash repro/run_env.sh python -c "import torch; print(torch.__version__)"
+bash repro/run_env.sh python train.py --help
 bash repro/run_env.sh nvidia-smi
 ```
+
+**原理**: A100 box 本身在容器里, 没有 docker/mount 权限. 所以不用 chroot,
+而是用 image 的 python binary + LD_LIBRARY_PATH + PYTHONPATH 直接跑.
 
 **换机器迁移**:
 ```bash
@@ -121,10 +125,11 @@ git clone https://github.com/wzk2239115/slime_sao.git
 bash slime_sao/repro/run_env.sh
 ```
 
-`run_env.sh` 会自动:
-- bind mount `/proc /sys /dev /home/jovyan/h800fast` 到 chroot
-- 设好 PATH / LD_LIBRARY_PATH / PYTHONPATH
-- chroot 进去 (CUDA / GPU 全可用)
+`run_env.sh` 会自动设好:
+- `PATH` 包含 image 的 cuda/bin
+- `LD_LIBRARY_PATH` 指向 image 的 CUDA/cuDNN/NCCL 库
+- `PYTHONPATH` 指向 image 的 torch/TE/megatron/sglang 包
+- Python 解释器用 image 的 `$ROOTFS/usr/bin/python3` (torch 2.9.1 + TE 2.10 + CUDA 12.9)
 
 ## 文件清单
 
