@@ -30,9 +30,9 @@ SITE="$ROOTFS/usr/local/lib/python3.12/dist-packages"
 # 环境变量 (模仿 NGC image 的默认环境)
 export HOME="${HOME:-/root}"
 export TERM="${TERM:-xterm-256color}"
-# 注意: PATH 只用 host 的系统命令 + image 的 cuda/bin
+# PATH: host 系统命令在前, image 的 cuda/bin 和 /usr/local/bin (ray/sgl-*等) 在后
 # (不能用 image 的 /usr/bin, 因为 image 的 ls/cat 等需要 GLIBC_2.38, host 没有)
-export PATH="$ROOTFS/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$ROOTFS/usr/local/cuda/bin:$ROOTFS/usr/local/bin"
 export LD_LIBRARY_PATH="$ROOTFS/usr/local/cuda/lib64:$ROOTFS/usr/local/nvidia/lib64"
 export PYTHONPATH="$SITE:$ROOTFS/root/slime:$ROOTFS/root/Megatron-LM:$HOST_WORK/slime_sao"
 export NVIDIA_VISIBLE_DEVICES=all
@@ -44,10 +44,16 @@ export NVTE_FRAMEWORK=pytorch
 # Python 解释器 (image 的 python, 编译时对齐 torch/TE 的 ABI)
 PY="$ROOTFS/usr/bin/python3"
 
-# 软链 image python 到 host 的 /usr/local/bin (让 `python` 命令直接可用)
-# 不影响 host 的 /usr/bin/python3 (那个是 host 自带的)
+# image 的命令行工具 (ray, sgl-*) 的 shebang 是 #!/usr/bin/python3
+# 让 /usr/bin/python3 和 /usr/local/bin/python{,3} 都指向 image 的 python
+# (host 容器里 /usr/bin/python3 没有装 torch/TE, 必须覆盖)
 ln -sf "$PY" /usr/local/bin/python3
 ln -sf "$PY" /usr/local/bin/python
+# 只在 /usr/bin/python3 存在但不是 image python 时覆盖
+if [ "$(readlink -f /usr/bin/python3 2>/dev/null)" != "$PY" ]; then
+    [ ! -f /usr/bin/python3.host.bak ] && cp -a /usr/bin/python3 /usr/bin/python3.host.bak 2>/dev/null || true
+    ln -sf "$PY" /usr/bin/python3
+fi
 
 if [ $# -gt 0 ]; then
     # 非交互: 在配置好的环境下跑命令
