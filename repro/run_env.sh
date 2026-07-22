@@ -30,7 +30,9 @@ SITE="$ROOTFS/usr/local/lib/python3.12/dist-packages"
 # 环境变量 (模仿 NGC image 的默认环境)
 export HOME="${HOME:-/root}"
 export TERM="${TERM:-xterm-256color}"
-export PATH="$ROOTFS/usr/local/cuda/bin:$ROOTFS/usr/local/sbin:$ROOTFS/usr/local/bin:$ROOTFS/usr/sbin:$ROOTFS/usr/bin:$ROOTFS/sbin:$ROOTFS/bin:/usr/local/nvidia/bin"
+# 注意: PATH 只用 host 的系统命令 + image 的 cuda/bin
+# (不能用 image 的 /usr/bin, 因为 image 的 ls/cat 等需要 GLIBC_2.38, host 没有)
+export PATH="$ROOTFS/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export LD_LIBRARY_PATH="$ROOTFS/usr/local/cuda/lib64:$ROOTFS/usr/local/nvidia/lib64"
 export PYTHONPATH="$SITE:$ROOTFS/root/slime:$ROOTFS/root/Megatron-LM:$HOST_WORK/slime_sao"
 export NVIDIA_VISIBLE_DEVICES=all
@@ -41,6 +43,11 @@ export NVTE_FRAMEWORK=pytorch
 
 # Python 解释器 (image 的 python, 编译时对齐 torch/TE 的 ABI)
 PY="$ROOTFS/usr/bin/python3"
+
+# 软链 image python 到 host 的 /usr/local/bin (让 `python` 命令直接可用)
+# 不影响 host 的 /usr/bin/python3 (那个是 host 自带的)
+ln -sf "$PY" /usr/local/bin/python3
+ln -sf "$PY" /usr/local/bin/python
 
 if [ $# -gt 0 ]; then
     # 非交互: 在配置好的环境下跑命令
