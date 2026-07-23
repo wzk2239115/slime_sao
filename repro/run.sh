@@ -33,6 +33,10 @@ echo "$SITE_PKG" > "$HOST_SITE/rootfs_packages.pth"
 export LD_LIBRARY_PATH="$ROOTFS/usr/local/cuda/lib64:$ROOTFS/usr/local/nvidia/lib64"
 export PYTHONPATH="$WORKDIR/patch:$SITE_PKG:$ROOTFS/root/slime:$ROOTFS/root/Megatron-LM:$ROOTFS/tmp/local_src/python:$WORKDIR"
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$ROOTFS/usr/local/cuda/bin"
+
+# torch_memory_saver: sglang CUDA graph 需要 preload 模式 (hook_mode=preload)
+# glibc 已升级到 2.39, 这个 .so 能正常加载
+export LD_PRELOAD="$SITE_PKG/torch_memory_saver_hook_mode_preload.abi3.so"
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONUNBUFFERED=1
@@ -111,7 +115,7 @@ for i in $(seq 1 30); do
 done
 curl -sf http://127.0.0.1:8265/api/version >/dev/null 2>&1 || { echo "ERROR: Dashboard 启动失败"; exit 1; }
 
-RUNTIME_ENV='{"env_vars": {"CUDA_DEVICE_MAX_CONNECTIONS": "1"}}'
+RUNTIME_ENV='{"env_vars": {"CUDA_DEVICE_MAX_CONNECTIONS": "1", "LD_PRELOAD": "'"$LD_PRELOAD"'"}}'
 LOG_FILE="$WORKDIR/${MODE}_${TAG}_$(date +%Y%m%d_%H%M%S).log"
 echo "日志: $LOG_FILE"
 
