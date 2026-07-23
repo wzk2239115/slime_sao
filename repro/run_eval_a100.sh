@@ -12,6 +12,8 @@
 set -ex
 export PYTHONUNBUFFERED=1
 
+TAG="${1:-baseline}"
+
 WORKDIR="${WORKDIR:-/home/jovyan/h800fast/wangzekai}"
 # 用 image 里的 slime (跟 image 的 torch/TE/megatron/sglang 版本配套)
 # host clone 的 slime 版本可能不一致 (sglang_pipeline_parallel_size 等属性缺失)
@@ -125,7 +127,7 @@ RUNTIME_ENV_JSON='{
 }'
 
 # ============ 提交 eval-only job ============
-LOG_FILE="${WORKDIR}/slime_sao/eval_baseline_$(date +%Y%m%d_%H%M%S).log"
+LOG_FILE="${WORKDIR}/slime_sao/eval_${TAG}_$(date +%Y%m%d_%H%M%S).log"
 echo "日志: ${LOG_FILE}"
 
 ray job submit --address="http://127.0.0.1:8265" \
