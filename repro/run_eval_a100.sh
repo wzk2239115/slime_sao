@@ -61,13 +61,16 @@ EVAL_ARGS=(
    --eval-config "${EVAL_CONFIG}"
 )
 
-PERF_ARGS=(
-   --tensor-model-parallel-size ${TP_SIZE}
-   --pipeline-model-parallel-size ${PP_SIZE}
-   --context-parallel-size ${CP_SIZE}
-   --expert-model-parallel-size ${EP_SIZE}
-   --expert-tensor-parallel-size ${ETP_SIZE}
-)
+ PERF_ARGS=(
+    --tensor-model-parallel-size ${TP_SIZE}
+    --pipeline-model-parallel-size ${PP_SIZE}
+    --context-parallel-size ${CP_SIZE}
+    --expert-model-parallel-size ${EP_SIZE}
+    --expert-tensor-parallel-size ${ETP_SIZE}
+    # Qwen3-30B-A3B-Thinking-2507 的 rope_theta=1e7, 但 slime 的 qwen3-30B-A3B.sh
+    # 默认 rotary_base=1e6 (基础版). 覆盖成 1e7 跟 HF config 对齐.
+    --rotary-base 10000000
+ )
 
 GRPO_ARGS=(
    --advantage-estimator grpo    # eval-only 不训练, 任意
