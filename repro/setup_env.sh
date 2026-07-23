@@ -60,13 +60,21 @@ rm -rf "$ROOTFS/dev" "$ROOTFS/proc" "$ROOTFS/sys"
 mkdir -p "$ROOTFS/dev" "$ROOTFS/proc" "$ROOTFS/sys"
 
 # 把 cudnn/nccl 库软链到 cuda/lib64 (统一 LD_LIBRARY_PATH 入口)
-echo "=== 软链 cudnn/nccl 到 cuda/lib64 ==="
+echo "=== 软链 cudnn/nccl/libstdc++ 到 cuda/lib64 ==="
 for lib in libcudnn libcudnn_engines_precompiled libcudnn_graph libcudnn_heuristic \
            libcudnn_ops libcudnn_adv libcudnn_cnn libcudnn_engines_runtime_compiled \
            libnccl; do
     for f in "$ROOTFS/usr/lib/x86_64-linux-gnu/${lib}"*; do
         [ -e "$f" ] && ln -sf "$f" "$ROOTFS/usr/local/cuda/lib64/" 2>/dev/null || true
     done
+done
+
+# image 的 libstdc++ 有 GLIBCXX_3.4.32 (torch_memory_saver 等 .so 需要), host 的没有
+# 新版 libstdc++ 向后兼容, 软链到 cuda/lib64 让 LD_LIBRARY_PATH 能找到
+for lib in libstdc++.so libstdc++.so.6 libgcc_s.so.1; do
+    src="$ROOTFS/usr/lib/x86_64-linux-gnu/$lib"
+    [ ! -e "$src" ] && src="$ROOTFS/lib/x86_64-linux-gnu/$lib"
+    [ -e "$src" ] && ln -sf "$src" "$ROOTFS/usr/local/cuda/lib64/" 2>/dev/null || true
 done
 
 # 关键: 升级 numpy 1.x -> 2.x (torch 2.9 编译时用 numpy 2.x, image 装的是 1.x)
