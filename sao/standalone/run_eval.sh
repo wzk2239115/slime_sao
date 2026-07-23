@@ -28,6 +28,8 @@ export PYTHONPATH="$WORKDIR:$SITE_PKG:$ROOTFS/tmp/local_src/python:$WORKDIR/patc
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$ROOTFS/usr/local/cuda/bin"
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export PYTHONDONTWRITEBYTECODE=1
+export no_proxy="127.0.0.1,localhost"
+export NO_PROXY="127.0.0.1,localhost"
 export SAO_WORKDIR="$WORKDIR"
 export SAO_ROOTFS="$ROOTFS"
 

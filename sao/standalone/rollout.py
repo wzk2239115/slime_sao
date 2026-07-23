@@ -30,7 +30,9 @@ def _post(port: int, path: str, payload: dict, timeout: int = 300) -> dict:
         data=data,
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    # Bypass any HTTP proxy for localhost
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(req, timeout=timeout) as resp:
         return json.loads(resp.read())
 
 
