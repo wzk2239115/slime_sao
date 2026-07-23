@@ -39,6 +39,7 @@ export NVIDIA_VISIBLE_DEVICES=all
 export NVIDIA_DRIVER_CAPABILITIES=compute,utility
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export PYTHONUNBUFFERED=1
+export PYTHONDONTWRITEBYTECODE=1  # 避免 __pycache__ 加载旧版本 (image 的 .py 可能比 .pyc 新)
 export NVTE_FRAMEWORK=pytorch
 
 # Python 解释器 (image 的 python, 编译时对齐 torch/TE 的 ABI)
