@@ -52,6 +52,7 @@ PROMPT_DATA="$WORKDIR/datasets/AIME2025/slime/aime2025-all.jsonl"
 # ============================================================
 # 模型架构
 # ============================================================
+export MODEL_ARGS_ROTARY_BASE=10000000  # Thinking-2507 的 rope_theta=1e7
 source "$SLIME_DIR/scripts/models/qwen3-30B-A3B.sh"
 
 # ============================================================
@@ -69,7 +70,6 @@ COMMON_ARGS=(
     --context-parallel-size $CP
     --expert-model-parallel-size $EP
     --expert-tensor-parallel-size $ETP
-    --rotary-base 10000000
     --rollout-num-gpus-per-engine $TP
     --sglang-mem-fraction-static 0.85
     --rollout-max-response-len 32768
@@ -123,6 +123,7 @@ if [ "$MODE" = "eval" ]; then
     ray job submit --address="http://127.0.0.1:8265" \
         --runtime-env-json="$RUNTIME_ENV" \
         -- python3 "$SLIME_DIR/train.py" \
+        "${MODEL_ARGS[@]}" \
         "${COMMON_ARGS[@]}" \
         --prompt-data "$PROMPT_DATA" \
         --num-rollout 0 \
@@ -141,6 +142,7 @@ elif [ "$MODE" = "train" ]; then
     ray job submit --address="http://127.0.0.1:8265" \
         --runtime-env-json="$RUNTIME_ENV" \
         -- python3 "$SLIME_DIR/train.py" \
+        "${MODEL_ARGS[@]}" \
         "${COMMON_ARGS[@]}" \
         --prompt-data "$PROMPT_DATA" \
         --num-rollout "${NUM_ROLLOUT:-100}" \
