@@ -45,6 +45,7 @@ pkill -9 launch_server 2>/dev/null || true
 sleep 2
 
 python3 -m sao.standalone.eval \
+    --tag "${TAG}" \
     --model-path "$MODEL" \
     --data "$DATA" \
     --tp 4 \

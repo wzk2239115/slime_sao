@@ -60,6 +60,15 @@ def run_eval(args):
         except Exception:
             pass
 
+        # Prepare result output dir
+        results_dir = os.path.join(os.path.dirname(args.data), "..", "eval_results", args.tag)
+        results_dir = os.path.abspath(results_dir)
+        os.makedirs(results_dir, exist_ok=True)
+        results_file = os.path.join(results_dir, "results.jsonl")
+        wrong_file = os.path.join(results_dir, "wrong.jsonl")
+        rf = open(results_file, "w")
+        wf = open(wrong_file, "w")
+
         correct = 0
         total = 0
         t0 = time.time()
@@ -91,16 +100,23 @@ def run_eval(args):
 
             choices = resp.get("choices", [])
             sample_rewards = []
-            for choice in choices:
+            sample_responses = []
+            for ci, choice in enumerate(choices):
                 msg = choice.get("message", {})
                 content = msg.get("content") or ""
-                # Qwen3 Thinking: answer might be in reasoning_content
+                reasoning = msg.get("reasoning_content") or ""
                 if not content:
-                    content = msg.get("reasoning_content") or ""
+                    content = reasoning
                 if not content:
                     print(f"  [{i+1}] WARNING: empty response content")
                 r = math_reward(content, gt)
                 sample_rewards.append(r)
+                sample_responses.append({
+                    "choice_idx": ci,
+                    "content": content,
+                    "reasoning_content": reasoning,
+                    "reward": r,
+                })
 
             if sample_rewards:
                 pass_at_1 = sum(sample_rewards) / len(sample_rewards)
@@ -110,14 +126,41 @@ def run_eval(args):
             correct += pass_at_1
             total += 1
             elapsed = time.time() - t0
-            print(f"  [{i+1}/{len(data)}] reward={pass_at_1:.0f} ({len(sample_rewards)} samples) "
+
+            # Save full result
+            result = {
+                "idx": i,
+                "input": sample["input"],
+                "ground_truth": gt,
+                "pass_at_1": pass_at_1,
+                "n_samples": len(sample_rewards),
+                "rewards": sample_rewards,
+                "responses": sample_responses,
+            }
+            rf.write(json.dumps(result, ensure_ascii=False) + "\n")
+            rf.flush()
+
+            # Save wrong problems separately
+            if pass_at_1 < 1.0:
+                wf.write(json.dumps(result, ensure_ascii=False) + "\n")
+                wf.flush()
+
+            status = "OK" if pass_at_1 >= 1.0 else "WRONG" if pass_at_1 == 0.0 else "PARTIAL"
+            print(f"  [{i+1}/{len(data)}] {status} reward={pass_at_1:.2f} ({len(sample_rewards)} samples) "
                   f"running_acc={correct/total:.1%} elapsed={elapsed:.0f}s")
+
+        rf.close()
+        wf.close()
 
         acc = correct / max(total, 1)
         elapsed = time.time() - t0
+        n_wrong = sum(1 for line in open(wrong_file))
         print(f"\n{'='*60}")
         print(f"AIME2025 pass@1: {acc:.1%} ({total} problems, {args.n_samples} samples each)")
         print(f"Total time: {elapsed:.0f}s ({elapsed/60:.1f} min)")
+        print(f"Wrong/partial problems: {n_wrong}")
+        print(f"Results: {results_file}")
+        print(f"Wrong:   {wrong_file}")
         print(f"{'='*60}")
         return acc
 
@@ -137,6 +180,7 @@ def main():
     parser.add_argument("--max-new-tokens", type=int, default=32768)
     parser.add_argument("--max-total-tokens", type=int, default=40960)
     parser.add_argument("--mem-fraction", type=float, default=0.85)
+    parser.add_argument("--tag", type=str, default="default")
     parser.add_argument("--disable-cuda-graph", action="store_true", default=True)
     args = parser.parse_args()
 
