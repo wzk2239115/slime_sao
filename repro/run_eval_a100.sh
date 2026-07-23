@@ -118,6 +118,20 @@ ray start --head --node-ip-address "${MASTER_ADDR}" \
    --num-gpus "${NUM_GPUS}" --disable-usage-stats \
    --dashboard-host=0.0.0.0 --dashboard-port=8265
 
+# 等 dashboard 就绪 (最多等 60 秒)
+echo "等待 Ray dashboard 就绪..."
+for i in $(seq 1 30); do
+   if curl -sf http://127.0.0.1:8265/api/version >/dev/null 2>&1; then
+      echo "Dashboard ready (第 ${i} 次检查)"
+      break
+   fi
+   sleep 2
+done
+curl -sf http://127.0.0.1:8265/api/version >/dev/null 2>&1 || {
+   echo "ERROR: Ray dashboard 启动失败，检查 ray start 输出"
+   exit 1
+}
+
 # ray worker 进程会继承当前 shell 的环境变量 (PYTHONPATH, LD_LIBRARY_PATH, PATH 等)
 # run_env.sh 已经设好这些, 所以 runtime_env 只需要额外设 CUDA 相关变量
 RUNTIME_ENV_JSON='{
