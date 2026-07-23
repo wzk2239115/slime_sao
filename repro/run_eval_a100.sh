@@ -13,13 +13,15 @@ set -ex
 export PYTHONUNBUFFERED=1
 
 WORKDIR="${WORKDIR:-/home/jovyan/h800fast/wangzekai}"
-SLIME_DIR="${WORKDIR}/slime"
+# 用 image 里的 slime (跟 image 的 torch/TE/megatron/sglang 版本配套)
+# host clone 的 slime 版本可能不一致 (sglang_pipeline_parallel_size 等属性缺失)
+SLIME_DIR="${SLIME_ROOTFS:-/home/jovyan/h800fast/wangzekai/slime_rootfs/root/slime}"
 cd "${SLIME_DIR}"
 
 # ============ 路径 ============
 HF_CHECKPOINT="${WORKDIR}/slime_sao/models/Qwen3-30B-A3B-Thinking-2507"
 REF_LOAD="${HF_CHECKPOINT}"   # eval-only 不需要单独的 torch_dist
-EVAL_CONFIG="${SLIME_DIR}/SAO/repro/eval_aime2025.yaml"
+EVAL_CONFIG="${WORKDIR}/slime_sao/repro/eval_aime2025.yaml"
 PROMPT_DATA="${WORKDIR}/slime_sao/datasets/AIME2025/slime/aime2025-all.jsonl"
 
 # ============ 模型架构 ============
