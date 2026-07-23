@@ -25,6 +25,8 @@ def env_setup():
         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
         "NVTE_FRAMEWORK": "pytorch",
+        "no_proxy": "127.0.0.1,localhost",
+        "NO_PROXY": "127.0.0.1,localhost",
     }
 
 
