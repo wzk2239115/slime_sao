@@ -32,7 +32,7 @@ except Exception:
     pass
 
 
-# --- Patch 2: fake sglang_router (Rust .so needs GLIBC_2.38, not on host) ---
+# --- Patch 2: fake sglang_router (Rust .so needs GLIBC_2.38, host has 2.35) ---
 class _FakeModule:
     """Fake module that returns dummy objects for any attribute/call."""
     def __getattr__(self, name):
@@ -43,12 +43,10 @@ class _FakeModule:
     def __repr__(self):
         return '<fake sglang_router (GLIBC_2.38 unavailable)>'
 
-# Only fake if real import fails (so training that needs router will still
-# try the real one first via sys.modules check)
-try:
-    import sglang_router  # noqa: F401
-except ImportError:
-    for _m in ['sglang_router', 'sglang_router.launch_router',
-               'sglang_router.mini_lb', 'sglang_router.router_args',
-               'sglang_router.sglang_router_rs']:
-        sys.modules.setdefault(_m, _FakeModule())
+# sglang_router_rs.abi3.so needs GLIBC_2.38; host doesn't have it.
+# Unconditionally fake - host can never load image's Rust .so.
+# eval-only mode (num_rollout=0, single engine) doesn't need the router.
+for _m in ['sglang_router', 'sglang_router.launch_router',
+           'sglang_router.mini_lb', 'sglang_router.router_args',
+           'sglang_router.sglang_router_rs']:
+    sys.modules[_m] = _FakeModule()
