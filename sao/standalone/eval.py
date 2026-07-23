@@ -92,7 +92,13 @@ def run_eval(args):
             choices = resp.get("choices", [])
             sample_rewards = []
             for choice in choices:
-                content = choice["message"]["content"]
+                msg = choice.get("message", {})
+                content = msg.get("content") or ""
+                # Qwen3 Thinking: answer might be in reasoning_content
+                if not content:
+                    content = msg.get("reasoning_content") or ""
+                if not content:
+                    print(f"  [{i+1}] WARNING: empty response content")
                 r = math_reward(content, gt)
                 sample_rewards.append(r)
 

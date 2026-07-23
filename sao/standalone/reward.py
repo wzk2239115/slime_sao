@@ -8,8 +8,10 @@ import re
 import signal
 
 
-def extract_boxed(text: str) -> str | None:
+def extract_boxed(text: str | None) -> str | None:
     """Extract the last \\boxed{...} content from text."""
+    if not text:
+        return None
     idx = text.rfind("\\boxed{")
     if idx == -1:
         return None
@@ -51,8 +53,10 @@ def normalize_answer(ans: str) -> str:
     return ans
 
 
-def math_reward(response: str, ground_truth: str) -> float:
+def math_reward(response: str | None, ground_truth: str) -> float:
     """Binary reward: 1.0 if extracted answer matches ground truth, else 0.0."""
+    if not response:
+        return 0.0
     pred = extract_boxed(response)
     if pred is None:
         return 0.0
