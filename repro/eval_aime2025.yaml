@@ -25,17 +25,17 @@ eval:
 
   datasets:
     - name: aime2025_I
-      path: /home/wzk/datasets/AIME2025/slime/aime2025-I.jsonl
+      path: /home/jovyan/h800fast/wangzekai/slime_sao/datasets/AIME2025/slime/aime2025-I.jsonl
       input_key: input
       label_key: label
 
     - name: aime2025_II
-      path: /home/wzk/datasets/AIME2025/slime/aime2025-II.jsonl
+      path: /home/jovyan/h800fast/wangzekai/slime_sao/datasets/AIME2025/slime/aime2025-II.jsonl
       input_key: input
       label_key: label
 
     # 整体一次评 (I + II 合并 30 题)
     - name: aime2025_all
-      path: /home/wzk/datasets/AIME2025/slime/aime2025-all.jsonl
+      path: /home/jovyan/h800fast/wangzekai/slime_sao/datasets/AIME2025/slime/aime2025-all.jsonl
       input_key: input
       label_key: label
