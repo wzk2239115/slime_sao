@@ -34,7 +34,7 @@ export TERM="${TERM:-xterm-256color}"
 # (不能用 image 的 /usr/bin, 因为 image 的 ls/cat 等需要 GLIBC_2.38, host 没有)
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$ROOTFS/usr/local/cuda/bin:$ROOTFS/usr/local/bin"
 export LD_LIBRARY_PATH="$ROOTFS/usr/local/cuda/lib64:$ROOTFS/usr/local/nvidia/lib64"
-export PYTHONPATH="$SITE:$ROOTFS/root/slime:$ROOTFS/root/Megatron-LM:$HOST_WORK/slime_sao"
+export PYTHONPATH="$HOST_WORK/slime_sao/patch:$SITE:$ROOTFS/root/slime:$ROOTFS/root/Megatron-LM:$HOST_WORK/slime_sao"
 export NVIDIA_VISIBLE_DEVICES=all
 export NVIDIA_DRIVER_CAPABILITIES=compute,utility
 export CUDA_DEVICE_MAX_CONNECTIONS=1
