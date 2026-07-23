@@ -78,6 +78,16 @@ if [ -d "$SITE/numpy" ] && ! "$ROOTFS/usr/bin/python3" -c "import numpy; exit(0 
         --target "$SITE" --upgrade --no-deps
 fi
 
+# 关键: 重装 sglang_router (image 的 Rust .so 需要 GLIBC_2.38, host 没有)
+# PyPI 的 manylinux wheel 兼容 glibc 2.17+
+if ! "$ROOTFS/usr/bin/python3" -c "from sglang_router.sglang_router_rs import get_available_tool_call_parsers" 2>/dev/null; then
+    echo "=== 重装 sglang_router (PyPI manylinux, 兼容 host glibc) ==="
+    rm -rf "$SITE/sglang_router" "$SITE/sglang_router-"*.dist-info
+    LD_LIBRARY_PATH="$ROOTFS/usr/local/cuda/lib64:$ROOTFS/usr/local/nvidia/lib64" \
+        "$ROOTFS/usr/bin/python3" -m pip install "sglang_router" \
+        --target "$SITE" --no-deps
+fi
+
 # 验证关键依赖
 echo ""
 echo "=== 验证 ==="
