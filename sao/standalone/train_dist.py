@@ -38,6 +38,64 @@ from .grpo_step import (
 )
 
 
+def train_step(
+    model,
+    optimizer,
+    samples,
+    tokenizer,
+    device,
+    algo="sao",
+    clip_low=0.7,
+    clip_high=6.0,
+    eps_clip=0.2,
+    eps_clip_high=0.28,
+    running_mean=0.0,
+    group_size=8,
+    max_seq_len=32768,
+    gradient_checkpointing=True,
+):
+    model.train()
+    rewards = [s.reward for s in samples]
+    if algo == "sao":
+        advantages = compute_sao_advantages(rewards, running_mean)
+    else:
+        advantages = compute_grpo_advantages(rewards, group_size)
+
+    input_ids_list = []
+    response_lens = []
+    rollout_log_probs_list = []
+
+    for s in samples:
+        prompt_ids = s.prompt_token_ids
+        resp_ids = s.response_token_ids
+        if not prompt_ids:
+            prompt_ids = tokenizer(s.prompt_text, add_special_tokens=False)["input_ids"]
+        if not resp_ids:
+            resp_ids = tokenizer(s.response_text, add_special_tokens=False)["input_ids"]
+        total_ids = prompt_ids + resp_ids
+        if len(total_ids) > max_seq_len:
+            excess = len(total_ids) - max_seq_len
+            prompt_ids = prompt_ids[excess:]
+            total_ids = prompt_ids + resp_ids
+        input_ids_list.append(torch.tensor(total_ids, dtype=torch.long))
+        response_lens.append(len(resp_ids))
+        rlp = s.response_logprobs if len(s.response_logprobs) == len(resp_ids) else [0.0] * len(resp_ids)
+        rollout_log_probs_list.append(torch.tensor(rlp, dtype=torch.float32))
+
+    train_log_probs = compute_log_probs(model, input_ids_list, response_lens, device, gradient_checkpointing)
+
+    if algo == "sao":
+        loss, metrics = dis_policy_loss(train_log_probs, rollout_log_probs_list, advantages, clip_low=clip_low, clip_high=clip_high)
+    else:
+        loss, metrics = grpo_policy_loss(train_log_probs, rollout_log_probs_list, advantages, eps_clip=eps_clip, eps_clip_high=eps_clip_high)
+
+    optimizer.zero_grad()
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+    optimizer.step()
+    return loss.item(), metrics
+
+
 def load_train_data(path: str) -> list[dict]:
     data = []
     with open(path) as f:
@@ -245,9 +303,6 @@ def run_training(args):
     print(f"\n{'='*60}")
     print(f"Training complete. Final checkpoint: {current_model_path}")
     print(f"{'='*60}")
-
-
-from .grpo_step import train_step
 
 
 def main():
