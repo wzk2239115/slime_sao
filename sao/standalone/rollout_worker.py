@@ -157,6 +157,7 @@ def run_rollout_worker(args):
     current_ckpt = None
     rewards_recent = []
     t0 = time.time()
+    worker_id = f"{int(time.time())}_{random.randint(1000,9999)}"
 
     while traj_id < args.max_trajectories:
         latest_ckpt = get_latest_checkpoint(args.checkpoint_dir)
@@ -247,7 +248,7 @@ def run_rollout_worker(args):
             "resp_len": len(resp_ids),
             "prompt_len": len(prompt_ids),
         }
-        traj_file = os.path.join(pending_dir, f"traj_{traj_id:08d}.json")
+        traj_file = os.path.join(pending_dir, f"traj_{worker_id}_{traj_id:08d}.json")
         tmp_file = traj_file + ".tmp"
         with open(tmp_file, "w") as f:
             json.dump(traj, f)
