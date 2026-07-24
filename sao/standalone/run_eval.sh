@@ -52,8 +52,8 @@ python3 -m sao.standalone.eval \
     --n-samples 4 \
     --temperature 1.0 \
     --top-p 1.0 \
-    --max-new-tokens 16384 \
-    --max-total-tokens 20480 \
+    --max-new-tokens 32768 \
+    --max-total-tokens 36864 \
     --mem-fraction 0.85 \
     --disable-cuda-graph \
     2>&1 | tee "$LOG_FILE"
