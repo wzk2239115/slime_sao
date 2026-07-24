@@ -211,6 +211,8 @@ def run_trainer(args):
         log_gpu_mem("pre_critic_forward")
         with torch.no_grad():
             values_list = compute_values(critic, input_ids_list, response_lens, device)
+        gc.collect()
+        torch.cuda.empty_cache()
         log_gpu_mem("post_critic_forward")
 
         advantages_list, returns_list = compute_gae_batch(
@@ -220,6 +222,8 @@ def run_trainer(args):
 
         # ---- Actor step (DIS) ----
         actor.train()
+        gc.collect()
+        torch.cuda.empty_cache()
         log_gpu_mem("pre_actor_forward")
         train_log_probs = compute_log_probs(
             actor, input_ids_list, response_lens, device,
