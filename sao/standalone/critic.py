@@ -47,8 +47,9 @@ class ValueModel(nn.Module):
         )
         hidden = outputs.hidden_states[-1]  # [batch, seq, hidden]
 
-        # Move hidden to value_head's device
-        hidden = hidden.to(self.value_head.weight.device)
+        # Move hidden to value_head's device + dtype
+        hidden = hidden.to(device=self.value_head.weight.device,
+                           dtype=self.value_head.weight.dtype)
         values = self.value_head(hidden).squeeze(-1)  # [batch, seq]
         return values
 
