@@ -1,23 +1,38 @@
 #!/bin/bash
-# 在 4×A100-80GB 机器上跑 Qwen3-30B-A3B-Thinking-2507 baseline eval on AIME2025
+# 一条命令跑 baseline eval:
+#   bash run_eval_a100.sh [tag]
 #
-# 目标: 复现论文 Table 1 中 "Qwen3-30B-A3B-Thinking-2507 SFT (w/o python) = 14.6"
-#       (论文报的 SFT 起点基线; 直接评 Thinking-2507 原版应该更高)
-#
-# 配置: 4×A100-80GB, 单 sglang 引擎 TP=4 (320GB 总显存)
-# 预计耗时: 30 题 × 4 sample × ~60s = ~2 小时
-#
-# 必须先跑 setup_a100.sh 完成环境准备.
+# 不需要先 source run_env.sh — 本脚本自带全部环境设置.
+# 前提: setup_env.sh 已跑过一次 (rootfs 已解压, numpy/triton/sglang_router 已 patch).
 
 set -ex
 export PYTHONUNBUFFERED=1
 
 TAG="${1:-baseline}"
 
+# ============================================================
+# 环境 (整合自 run_env.sh, 不需要单独 source)
+# ============================================================
 WORKDIR="${WORKDIR:-/home/jovyan/h800fast/wangzekai}"
-# 用 image 里的 slime (跟 image 的 torch/TE/megatron/sglang 版本配套)
-# host clone 的 slime 版本可能不一致 (sglang_pipeline_parallel_size 等属性缺失)
-SLIME_DIR="${SLIME_ROOTFS:-/home/jovyan/h800fast/wangzekai/slime_rootfs/root/slime}"
+ROOTFS="${ROOTFS:-${WORKDIR}/slime_rootfs}"
+HOST_WORK="${WORKDIR}"
+SITE="$ROOTFS/usr/local/lib/python3.12/dist-packages"
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$ROOTFS/usr/local/cuda/bin:$ROOTFS/usr/local/bin"
+export LD_LIBRARY_PATH="$ROOTFS/usr/local/cuda/lib64:$ROOTFS/usr/local/nvidia/lib64"
+export PYTHONPATH="$HOST_WORK/slime_sao/patch:$ROOTFS/tmp/local_src/python:$ROOTFS/sgl-workspace/sglang/python:$SITE:$ROOTFS/root/slime:$ROOTFS/root/Megatron-LM:$HOST_WORK/slime_sao"
+export NVIDIA_VISIBLE_DEVICES=all
+export NVIDIA_DRIVER_CAPABILITIES=compute,utility
+export CUDA_DEVICE_MAX_CONNECTIONS=1
+export PYTHONDONTWRITEBYTECODE=1
+export NVTE_FRAMEWORK=pytorch
+
+# image 的 python → /usr/local/bin (ray 等工具的 shebang 找 /usr/bin/python3)
+ln -sf "$ROOTFS/usr/bin/python3" /usr/local/bin/python3
+ln -sf "$ROOTFS/usr/bin/python3" /usr/local/bin/python
+# ============================================================
+
+SLIME_DIR="$ROOTFS/root/slime"
 cd "${SLIME_DIR}"
 
 # ============ 路径 ============
