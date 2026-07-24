@@ -100,9 +100,11 @@ def dis_policy_loss(
 
     for tlp, rlp, adv in zip(train_log_probs, rollout_log_probs, advantages):
         rlp = rlp.to(tlp.device)
-        # ratio = π_θ / π_rollout = exp(log π_θ - log π_rollout)
         ratio = torch.exp(tlp - rlp)
-        adv_t = torch.tensor(adv, device=tlp.device, dtype=tlp.dtype)
+        if isinstance(adv, torch.Tensor):
+            adv_t = adv.to(device=tlp.device, dtype=tlp.dtype).detach()
+        else:
+            adv_t = torch.tensor(adv, device=tlp.device, dtype=tlp.dtype)
 
         # DIS mask: zero out tokens outside [clip_low, clip_high]
         in_region = (ratio >= clip_low) & (ratio <= clip_high)
@@ -118,7 +120,7 @@ def dis_policy_loss(
     metrics = {
         "loss": loss.item(),
         "clip_ratio": total_clipped / max(total_tokens, 1),
-        "mean_ratio": torch.cat([torch.exp(t - r) for t, r in zip(train_log_probs, rollout_log_probs)]).mean().item(),
+        "mean_ratio": torch.cat([torch.exp(t - r.to(t.device)) for t, r in zip(train_log_probs, rollout_log_probs)]).mean().item(),
     }
     return loss, metrics
 
