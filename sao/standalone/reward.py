@@ -30,11 +30,16 @@ def extract_boxed(text: str | None) -> str | None:
 def normalize_answer(ans: str) -> str:
     """Normalize a math answer string for comparison."""
     ans = ans.strip()
-    ans = ans.replace("\\,", "").replace("\\ ", "")
-    ans = ans.replace("\\text{", "").replace("}", "")
-    ans = ans.replace("$", "").replace("%", "")
+    # Remove LaTeX backslash commands: \sqrt → sqrt, \frac → frac
+    ans = ans.replace("\\", "")
+    # Remove whitespace, braces, dollar signs, percent
     ans = ans.replace(" ", "")
+    ans = ans.replace("{", "").replace("}", "")
+    ans = ans.replace("$", "").replace("%", "")
+    ans = ans.replace(",", "")
+    ans = ans.replace("\\!", "")
 
+    # Try numeric: int or float
     try:
         val = float(ans)
         if abs(val - round(val)) < 1e-6:
@@ -43,9 +48,11 @@ def normalize_answer(ans: str) -> str:
     except (ValueError, OverflowError):
         pass
 
+    # Try fraction: "1/2" or "frac(13)(2)" → "13/2"
+    ans_clean = ans.replace("frac(", "").replace(")", "")
     try:
         from fractions import Fraction
-        frac = Fraction(ans)
+        frac = Fraction(ans_clean)
         return str(frac)
     except Exception:
         pass
