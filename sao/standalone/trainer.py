@@ -129,7 +129,6 @@ def run_trainer(args):
 
     critic = ValueModel(base_critic, hidden_size=actor.config.hidden_size)
     critic.freeze_attention()
-    critic = critic.to(device)
 
     critic_params = [p for p in critic.parameters() if p.requires_grad]
     critic_optimizer = create_optimizer(

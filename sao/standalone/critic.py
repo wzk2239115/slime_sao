@@ -16,24 +16,39 @@ import torch.nn as nn
 # Value Model
 # ============================================================
 class ValueModel(nn.Module):
-    """Base LM + linear value head. Same architecture as actor, outputs V(s_t)."""
+    """Base LM + linear value head. Same architecture as actor, outputs V(s_t).
+
+    Handles device_map="auto" (model split across GPUs).
+    """
 
     def __init__(self, base_model, hidden_size: int):
         super().__init__()
-        self.model = base_model  # AutoModelForCausalLM
+        self.model = base_model
         self.value_head = nn.Linear(hidden_size, 1, bias=True)
-        # Init value head
         nn.init.normal_(self.value_head.weight, std=0.02)
         nn.init.zeros_(self.value_head.bias)
 
+        # Find output device (device of last decoder layer params)
+        output_device = torch.device("cpu")
+        for param in self.model.parameters():
+            output_device = param.device
+        self.value_head = self.value_head.to(output_device)
+        print(f"  [ValueModel] value_head on {output_device}")
+
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        """Forward pass, return per-token values [batch, seq_len]."""
+        # Move input to first layer's device (embedding layer)
+        first_device = next(self.model.parameters()).device
+        input_ids = input_ids.to(first_device)
+
         outputs = self.model(
             input_ids,
             output_hidden_states=True,
             use_cache=False,
         )
         hidden = outputs.hidden_states[-1]  # [batch, seq, hidden]
+
+        # Move hidden to value_head's device
+        hidden = hidden.to(self.value_head.weight.device)
         values = self.value_head(hidden).squeeze(-1)  # [batch, seq]
         return values
 
@@ -132,7 +147,7 @@ def compute_gae_batch(
 # ============================================================
 def compute_values(
     critic: ValueModel,
-    input_ids_list: list[torch.Tensor],  # full prompt+response
+    input_ids_list: list[torch.Tensor],
     response_lens: list[int],
     device: torch.device,
 ) -> list[torch.Tensor]:
@@ -140,9 +155,8 @@ def compute_values(
     values_list = []
     with torch.no_grad():
         for input_ids, resp_len in zip(input_ids_list, response_lens):
-            ids = input_ids.unsqueeze(0).to(device)
-            vals = critic(ids)[0]  # [total_len]
-            # Response tokens are the last resp_len positions
+            ids = input_ids.unsqueeze(0)
+            vals = critic(ids)[0]  # ValueModel handles device internally
             values_list.append(vals[-resp_len:].clone())
     return values_list
 
@@ -171,14 +185,15 @@ def train_critic_step(
     old_values_list = []
     with torch.no_grad():
         for input_ids, resp_len in zip(input_ids_list, response_lens):
-            ids = input_ids.unsqueeze(0).to(device)
+            ids = input_ids.unsqueeze(0)
             vals = critic(ids)[0]
             old_values_list.append(vals[-resp_len:].clone())
 
     # Step 2: K iterations of value loss
+    output_device = critic.value_head.weight.device
     total_loss = 0.0
     for epoch in range(k_epochs):
-        epoch_loss = torch.tensor(0.0, device=device)
+        epoch_loss = torch.tensor(0.0, device=output_device)
         total_tokens = 0
 
         optimizer.zero_grad()
@@ -186,12 +201,12 @@ def train_critic_step(
         for input_ids, resp_len, old_v, ret in zip(
             input_ids_list, response_lens, old_values_list, returns_list
         ):
-            ids = input_ids.unsqueeze(0).to(device)
-            vals = critic(ids)[0]  # [total_len]
-            resp_vals = vals[-resp_len:]  # [resp_len]
+            ids = input_ids.unsqueeze(0)
+            vals = critic(ids)[0]
+            resp_vals = vals[-resp_len:]
 
-            old_v = old_v.to(device)
-            ret = ret.to(device)
+            old_v = old_v.to(resp_vals.device)
+            ret = ret.to(resp_vals.device)
 
             # Value clipping
             vals_clipped = old_v + (resp_vals - old_v).clamp(-value_clip, value_clip)

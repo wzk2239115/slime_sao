@@ -38,20 +38,21 @@ def compute_sao_advantages(
 
 def compute_log_probs(
     model,
-    input_ids_list: list[torch.Tensor],  # each is [seq_len], full prompt+response
-    response_lens: list[int],  # number of response tokens per sample
+    input_ids_list: list[torch.Tensor],
+    response_lens: list[int],
     device: torch.device,
     gradient_checkpointing: bool = True,
 ) -> list[torch.Tensor]:
     """Compute log π_θ for response tokens of each sample.
 
     Returns list of tensors, each [response_len_i], with gradient.
+    Handles device_map="auto" (model split across GPUs).
     """
     log_probs_list = []
+    first_device = next(model.parameters()).device
 
     for input_ids, resp_len in zip(input_ids_list, response_lens):
-        input_ids = input_ids.unsqueeze(0).to(device)  # [1, total_len]
-        total_len = input_ids.shape[1]
+        input_ids = input_ids.unsqueeze(0).to(first_device)
 
         if gradient_checkpointing and model.training:
             outputs = model(input_ids, use_cache=False)
@@ -59,13 +60,11 @@ def compute_log_probs(
             outputs = model(input_ids, use_cache=False)
 
         logits = outputs.logits[0]  # [total_len, vocab]
-        # Predict token t from position t-1: logits[:-1] predicts tokens [1:]
         shift_logits = logits[:-1]
         shift_labels = input_ids[0, 1:]
 
-        # Response tokens are the last resp_len tokens
-        resp_logits = shift_logits[-resp_len:]  # [resp_len, vocab]
-        resp_labels = shift_labels[-resp_len:]  # [resp_len]
+        resp_logits = shift_logits[-resp_len:]
+        resp_labels = shift_labels[-resp_len:]
 
         log_probs = F.log_softmax(resp_logits, dim=-1)
         token_log_probs = log_probs.gather(1, resp_labels.unsqueeze(1)).squeeze(1)
