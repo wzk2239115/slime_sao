@@ -23,8 +23,10 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$ROOTF
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export PYTHONDONTWRITEBYTECODE=1
 export NVTE_FRAMEWORK=pytorch
-export no_proxy="127.0.0.1,localhost"
-export NO_PROXY="127.0.0.1,localhost"
+# 彻底禁用 proxy (sglang warmup 访问 0.0.0.0 会被 squid 拦截)
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+export no_proxy="*"
+export NO_PROXY="*"
 
 MODEL="$WORKDIR/models/Qwen3-30B-A3B-Thinking-2507"
 CKPT_DIR="$WORKDIR/checkpoints/sao_dist"
