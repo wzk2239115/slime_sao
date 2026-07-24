@@ -63,4 +63,7 @@ python3 -m sao.standalone.train_dist \
     --algo "${ALGO:-sao}" \
     --clip-low 0.7 --clip-high 6.0 \
     --save-interval "${SAVE_INTERVAL:-10}" \
+    ${USE_CRITIC:+--use-critic} \
+    --critic-lr 5e-6 --critic-k 2 \
+    --value-clip 0.2 --gamma 1.0 --gae-alpha 1.5 \
     2>&1 | tee "$LOG_FILE"

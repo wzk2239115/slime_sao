@@ -36,6 +36,7 @@ from .grpo_step import (
     dis_policy_loss,
     grpo_policy_loss,
 )
+from .critic import ValueModel, compute_values, compute_gae_batch, train_critic_step
 
 
 def train_step(
@@ -223,6 +224,34 @@ def run_training(args):
         betas=(args.beta1, args.beta2),
     )
 
+    # ============ Load Critic (Value Model) ============
+    critic = None
+    critic_optimizer = None
+    if args.use_critic:
+        print(f"\nLoading critic model from {args.model_path} ...")
+        base_critic = AutoModelForCausalLM.from_pretrained(
+            args.model_path,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            trust_remote_code=True,
+            attn_implementation="flash_attention_2",
+        )
+        base_critic.gradient_checkpointing_enable()
+        base_critic.config.use_cache = False
+
+        critic = ValueModel(base_critic, hidden_size=model.config.hidden_size)
+        critic.freeze_attention()  # SAO §3.2: frozen attention
+        critic = critic.to(device)
+
+        critic_params = [p for p in critic.parameters() if p.requires_grad]
+        critic_optimizer = torch.optim.AdamW(
+            critic_params,
+            lr=args.critic_lr,
+            weight_decay=args.weight_decay,
+            betas=(args.beta1, args.beta2),
+        )
+        print(f"  Critic: {len(critic_params)} trainable params, lr={args.critic_lr}")
+
     # ============ Wait for remote sglang ============
     print(f"\nWaiting for sglang at {args.sglang_host}:{args.sglang_port}...")
     wait_for_sglang(args.sglang_host, args.sglang_port)
@@ -271,17 +300,81 @@ def run_training(args):
             print("  Too few samples, skipping")
             continue
 
-        # ---- Phase 2: Training (local HF model) ----
+        # ---- Phase 2a: Build input_ids + GAE advantages ----
         t0 = time.time()
-        loss, metrics = train_step(
-            model, optimizer, all_samples, tokenizer, device,
-            algo=args.algo,
-            clip_low=args.clip_low, clip_high=args.clip_high,
-            eps_clip=args.eps_clip, eps_clip_high=args.eps_clip_high,
-            running_mean=running_mean,
-            group_size=args.n_samples,
-            max_seq_len=args.max_seq_len,
+
+        input_ids_list = []
+        response_lens = []
+        rollout_log_probs_list = []
+        rewards_float = []
+
+        for s in all_samples:
+            prompt_ids = s.prompt_token_ids
+            resp_ids = s.response_token_ids
+            if not prompt_ids:
+                prompt_ids = tokenizer(s.prompt_text, add_special_tokens=False)["input_ids"]
+            if not resp_ids:
+                resp_ids = tokenizer(s.response_text, add_special_tokens=False)["input_ids"]
+            total_ids = prompt_ids + resp_ids
+            if len(total_ids) > args.max_seq_len:
+                excess = len(total_ids) - args.max_seq_len
+                prompt_ids = prompt_ids[excess:]
+                total_ids = prompt_ids + resp_ids
+            input_ids_list.append(torch.tensor(total_ids, dtype=torch.long))
+            response_lens.append(len(resp_ids))
+            rlp = s.response_logprobs if len(s.response_logprobs) == len(resp_ids) else [0.0] * len(resp_ids)
+            rollout_log_probs_list.append(torch.tensor(rlp, dtype=torch.float32))
+            rewards_float.append(s.reward)
+
+        # Compute advantages: GAE (if critic) or running-mean (fallback)
+        if critic is not None:
+            with torch.no_grad():
+                values_list = compute_values(critic, input_ids_list, response_lens, device)
+            advantages_list, returns_list = compute_gae_batch(
+                values_list, rewards_float, response_lens,
+                gamma=args.gamma, alpha=args.gae_alpha,
+            )
+            advantages_float = [a.mean().item() for a in advantages_list]
+            # Flatten per-token advantages for DIS loss
+            flat_advantages = []
+            for adv in advantages_list:
+                flat_advantages.append(adv)
+        else:
+            advantages_float = compute_sao_advantages(rewards_float, running_mean)
+            flat_advantages = advantages_float
+            returns_list = None
+
+        # ---- Phase 2b: Actor training step ----
+        model.train()
+        train_log_probs = compute_log_probs(
+            model, input_ids_list, response_lens, device, True
         )
+
+        if args.algo == "sao":
+            actor_loss, actor_metrics = dis_policy_loss(
+                train_log_probs, rollout_log_probs_list, flat_advantages,
+                clip_low=args.clip_low, clip_high=args.clip_high,
+            )
+        else:
+            actor_loss, actor_metrics = grpo_policy_loss(
+                train_log_probs, rollout_log_probs_list, flat_advantages,
+                eps_clip=args.eps_clip, eps_clip_high=args.eps_clip_high,
+            )
+
+        optimizer.zero_grad()
+        actor_loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+
+        # ---- Phase 2c: Critic training step (TTUR K=2) ----
+        critic_loss = 0.0
+        if critic is not None and returns_list is not None:
+            critic_loss, critic_metrics = train_critic_step(
+                critic, critic_optimizer, input_ids_list, response_lens,
+                returns_list, device,
+                value_clip=args.value_clip, k_epochs=args.critic_k,
+            )
+
         train_time = time.time() - t0
 
         # ---- Progress line ----
@@ -290,8 +383,14 @@ def run_training(args):
         eta = avg_step * (args.num_steps - step - 1)
         recent_r = sum(reward_history[-10:]) / max(len(reward_history[-10:]), 1)
 
-        print(f"  reward={mean_reward:.2f} (avg10={recent_r:.2f}) | loss={loss:.4f} | "
-              f"clip={metrics['clip_ratio']:.1%} | ratio={metrics['mean_ratio']:.2f}")
+        status_parts = [
+            f"reward={mean_reward:.2f} (avg10={recent_r:.2f})",
+            f"actor_loss={actor_loss:.4f}",
+            f"clip={actor_metrics['clip_ratio']:.1%}",
+        ]
+        if critic is not None:
+            status_parts.append(f"critic_loss={critic_loss:.4f}")
+        print(f"  {' | '.join(status_parts)}")
         print(f"  gen={gen_time:.0f}s train={train_time:.0f}s | "
               f"elapsed={elapsed/60:.1f}min eta={eta/60:.1f}min")
 
@@ -302,6 +401,10 @@ def run_training(args):
             os.makedirs(ckpt_dir, exist_ok=True)
             model.save_pretrained(ckpt_dir, safe_serialization=True)
             tokenizer.save_pretrained(ckpt_dir)
+            if critic is not None:
+                critic_dir = os.path.join(ckpt_dir, "critic")
+                os.makedirs(critic_dir, exist_ok=True)
+                torch.save(critic.state_dict(), os.path.join(critic_dir, "critic.pt"))
             current_model_path = ckpt_dir
 
             # Signal sglang daemon to reload
@@ -343,6 +446,20 @@ def main():
     parser.add_argument("--eps-clip", type=float, default=0.2)
     parser.add_argument("--eps-clip-high", type=float, default=0.28)
     parser.add_argument("--save-interval", type=int, default=10)
+
+    # SAO critic (value model) args
+    parser.add_argument("--use-critic", action="store_true", default=False,
+                        help="Enable value model (full SAO). If false, uses running-mean baseline.")
+    parser.add_argument("--critic-lr", type=float, default=5e-6,
+                        help="Critic learning rate (paper §4.1: 5e-6)")
+    parser.add_argument("--critic-k", type=int, default=2,
+                        help="TTUR: critic updates per actor step (paper: K=2)")
+    parser.add_argument("--value-clip", type=float, default=0.2,
+                        help="Value clipping epsilon for critic loss")
+    parser.add_argument("--gamma", type=float, default=1.0,
+                        help="GAE discount factor (paper: 1.0)")
+    parser.add_argument("--gae-alpha", type=float, default=1.5,
+                        help="Length-adaptive lambda alpha (paper: 1.5)")
     args = parser.parse_args()
 
     os.makedirs(args.save_dir, exist_ok=True)
