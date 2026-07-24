@@ -220,31 +220,47 @@ def run_trainer(args):
             gamma=args.gamma, alpha=args.gae_alpha,
         )
 
-        # ---- Actor step (DIS) ----
+        # ---- Actor step (DIS) — gradient accumulation, 1 sample at a time ----
         actor.train()
         gc.collect()
         torch.cuda.empty_cache()
-        log_gpu_mem("pre_actor_forward")
-        train_log_probs = compute_log_probs(
-            actor, input_ids_list, response_lens, device,
-            gradient_checkpointing=True,
-        )
-        log_gpu_mem("post_actor_forward")
-        actor_loss, actor_metrics = dis_policy_loss(
-            train_log_probs, rollout_log_probs_list, advantages_list,
-            clip_low=args.clip_low, clip_high=args.clip_high,
-        )
-        log_gpu_mem("post_actor_loss")
+        log_gpu_mem("pre_actor_step")
+
         actor_optimizer.zero_grad()
-        log_gpu_mem("pre_actor_backward")
-        actor_loss.backward()
-        log_gpu_mem("post_actor_backward")
+        total_tokens = sum(response_lens)
+        actor_metrics = {"clip_ratio": 0.0, "mean_ratio": 0.0, "loss": 0.0}
+
+        for i in range(len(input_ids_list)):
+            # Forward single sample
+            single_ids = [input_ids_list[i]]
+            single_lens = [response_lens[i]]
+            single_rlp = [rollout_log_probs_list[i]]
+            single_adv = [advantages_list[i]]
+
+            tlp = compute_log_probs(
+                actor, single_ids, single_lens, device,
+                gradient_checkpointing=True,
+            )
+            sample_loss, sample_metrics = dis_policy_loss(
+                tlp, single_rlp, single_adv,
+                clip_low=args.clip_low, clip_high=args.clip_high,
+            )
+            # Scale by this sample's fraction of total tokens
+            (sample_loss * response_lens[i] / total_tokens).backward()
+
+            actor_metrics["clip_ratio"] += sample_metrics["clip_ratio"] * response_lens[i] / total_tokens
+            actor_metrics["mean_ratio"] += sample_metrics["mean_ratio"] * response_lens[i] / total_tokens
+            actor_metrics["loss"] += sample_loss.item() * response_lens[i] / total_tokens
+
+            del tlp, sample_loss, single_ids, single_lens, single_rlp, single_adv
+            gc.collect()
+
+        actor_metrics["clip_ratio"] /= max(len(input_ids_list), 1) * 0 + 1  # already weighted
         torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
         actor_optimizer.step()
         log_gpu_mem("post_actor_step")
 
         # Free actor activations
-        del train_log_probs, actor_loss
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -289,7 +305,6 @@ def run_trainer(args):
               f"ratio={actor_metrics.get('mean_ratio',0):.3f} | "
               f"{avg_step:.0f}s/step ETA={eta/3600:.1f}h "
               f"GPU={gpu_mem:.0f}GB{warmup_str}")
-
         # ---- Save checkpoint ----
         if step % args.save_interval == 0 or step == args.num_steps:
             ckpt_dir = os.path.join(args.save_dir, f"step_{step}")
