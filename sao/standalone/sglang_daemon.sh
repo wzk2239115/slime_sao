@@ -87,6 +87,8 @@ while true; do
             rm -f "$RELOAD_FILE"
             kill -TERM $SGLANG_PID 2>/dev/null || true
             wait $SGLANG_PID 2>/dev/null || true
+            # 标记 reload 完成 (rollout worker 等待这个信号)
+            touch "$CKPT_DIR/.reload_done"
             break
         fi
     done
