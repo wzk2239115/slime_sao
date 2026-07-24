@@ -268,11 +268,23 @@ def run_training(args):
         filled = int(bar_len * pct)
         bar = "█" * filled + "░" * (bar_len - filled)
 
+        # 预估时间
+        if step > 0:
+            elapsed = time.time() - train_t0
+            avg_step = elapsed / step
+            eta_sec = avg_step * (args.num_steps - step)
+            eta_str = f"{int(eta_sec//60)}min"
+            step_str = f"{avg_step:.0f}s/step"
+        else:
+            eta_str = "..."
+            step_str = "first"
+
         print(f"\n{'='*60}")
-        print(f"[{bar}] {step+1}/{args.num_steps} ({pct:.0%})")
+        print(f"[{bar}] {step+1}/{args.num_steps} ({pct:.0%}) | {step_str} | ETA {eta_str}")
         print(f"{'='*60}")
 
         # ---- Phase 1: Rollout (remote sglang) ----
+        print(f"  [rollout] Generating {args.batch_size}×{args.n_samples} samples via sglang...")
         batch_prompts = random.sample(data, min(args.batch_size, len(data)))
         prompt_texts = [p["input"] for p in batch_prompts]
         ground_truths = [p.get("label", p.get("answer", "")) for p in batch_prompts]
