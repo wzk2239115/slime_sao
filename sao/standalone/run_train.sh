@@ -63,9 +63,8 @@ python3 -m sao.standalone.train \
     --temperature 1.0 \
     --top-p 1.0 \
     --max-new-tokens 32768 \
-    --max-total-tokens 40960 \
+    --max-total-tokens 36864 \
     --max-seq-len 32768 \
-    --mem-fraction 0.85 \
     --algo "${ALGO:-sao}" \
     --clip-low 0.7 --clip-high 6.0 \
     --save-interval "${SAVE_INTERVAL:-10}" \
