@@ -157,6 +157,8 @@ def generate_via_remote_sglang(
             "temperature": temperature,
             "top_p": top_p,
             "max_tokens": max_new_tokens,
+            "logprobs": True,       # SAO DIS: 需要 rollout log-probs
+            "top_logprobs": 1,
         }
         try:
             resp = _post(port, "/v1/chat/completions", payload, host=host, timeout=3600)

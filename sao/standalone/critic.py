@@ -109,15 +109,18 @@ def compute_gae_batch(
     ret_list = []
 
     for values, reward, resp_len in zip(values_list, rewards, response_lens):
-        # Truncate values to response length
         vals = values[:resp_len].detach()
 
+        # Actor advantages: length-adaptive λ_policy = 1-1/(α·L)
         if use_length_adaptive:
-            lam = length_adaptive_lambda(resp_len, alpha)
+            lam_policy = length_adaptive_lambda(resp_len, alpha)
         else:
-            lam = critic_lambd
+            lam_policy = critic_lambd
+        adv, _ = compute_gae_single(vals, reward, gamma=gamma, lambd=lam_policy)
 
-        adv, ret = compute_gae_single(vals, reward, gamma=gamma, lambd=lam)
+        # Critic returns: λ_critic = 1 (pure Monte-Carlo return, paper §4.1)
+        _, ret = compute_gae_single(vals, reward, gamma=gamma, lambd=1.0)
+
         adv_list.append(adv)
         ret_list.append(ret)
 
