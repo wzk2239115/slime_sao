@@ -65,6 +65,20 @@ def queue_size(queue_dir: str) -> int:
     return len(glob.glob(os.path.join(pending_dir, "traj_*.json")))
 
 
+def log_gpu_mem(tag: str):
+    """Log GPU memory on all visible GPUs."""
+    try:
+        for i in range(torch.cuda.device_count()):
+            alloc = torch.cuda.memory_allocated(i) / 1e9
+            reserved = torch.cuda.memory_reserved(i) / 1e9
+            peak = torch.cuda.max_memory_allocated(i) / 1e9
+            if alloc > 0.1 or peak > 0.1:
+                print(f"    [MEM] {tag:30s} GPU{i}: alloc={alloc:.1f}G "
+                      f"reserved={reserved:.1f}G peak={peak:.1f}G")
+    except Exception:
+        pass
+
+
 def create_optimizer(params, lr: float, weight_decay: float, use_8bit: bool = True):
     """Create optimizer: 8-bit AdamW if bitsandbytes available, else standard AdamW."""
     if use_8bit:
@@ -194,8 +208,10 @@ def run_trainer(args):
         reward_history.append(mean_reward)
 
         # ---- Critic forward → GAE (no grad) ----
+        log_gpu_mem("pre_critic_forward")
         with torch.no_grad():
             values_list = compute_values(critic, input_ids_list, response_lens, device)
+        log_gpu_mem("post_critic_forward")
 
         advantages_list, returns_list = compute_gae_batch(
             values_list, rewards_float, response_lens,
@@ -204,18 +220,24 @@ def run_trainer(args):
 
         # ---- Actor step (DIS) ----
         actor.train()
+        log_gpu_mem("pre_actor_forward")
         train_log_probs = compute_log_probs(
             actor, input_ids_list, response_lens, device,
             gradient_checkpointing=True,
         )
+        log_gpu_mem("post_actor_forward")
         actor_loss, actor_metrics = dis_policy_loss(
             train_log_probs, rollout_log_probs_list, advantages_list,
             clip_low=args.clip_low, clip_high=args.clip_high,
         )
+        log_gpu_mem("post_actor_loss")
         actor_optimizer.zero_grad()
+        log_gpu_mem("pre_actor_backward")
         actor_loss.backward()
+        log_gpu_mem("post_actor_backward")
         torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
         actor_optimizer.step()
+        log_gpu_mem("post_actor_step")
 
         # Free actor activations
         del train_log_probs, actor_loss
@@ -226,14 +248,20 @@ def run_trainer(args):
         critic_loss_val = 0.0
         if step >= critic_warmup_steps:
             critic.train()
+            log_gpu_mem("pre_critic_train")
             critic_loss_val, _ = train_critic_step(
                 critic, critic_optimizer, input_ids_list, response_lens,
                 returns_list, device,
                 value_clip=args.value_clip, k_epochs=args.critic_k,
             )
+            log_gpu_mem("post_critic_train")
             del _
             gc.collect()
             torch.cuda.empty_cache()
+
+        # Reset peak memory for next step analysis
+        for i in range(torch.cuda.device_count()):
+            torch.cuda.reset_peak_memory_stats(i)
 
         step += 1
 
