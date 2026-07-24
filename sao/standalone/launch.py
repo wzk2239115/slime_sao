@@ -109,6 +109,7 @@ def start_inference():
          "--tp", num_gpu,
          "--mem-fraction-static", "0.85",
          "--context-length", "36864",
+         "--disable-custom-all-reduce",
          "--reasoning-parser", "qwen3"] + cg_flag,
         stdout=open(log_sglang, "w"), stderr=subprocess.STDOUT,
     )
