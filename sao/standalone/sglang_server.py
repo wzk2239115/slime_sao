@@ -60,7 +60,7 @@ def start_server(
     full_env.update(env_setup())
 
     proc = subprocess.Popen(cmd, env=full_env, stdout=sys.stderr, stderr=sys.stderr)
-    _wait_ready(port, proc, timeout=600)
+    _wait_ready(port, proc, timeout=900)
     return proc
 
 

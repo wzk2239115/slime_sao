@@ -23,7 +23,7 @@ class RolloutSample:
     meta: dict = field(default_factory=dict)
 
 
-def _post(port: int, path: str, payload: dict, timeout: int = 300) -> dict:
+def _post(port: int, path: str, payload: dict, timeout: int = 3600) -> dict:
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}{path}",
@@ -60,7 +60,7 @@ def generate_batch(
             "top_p": top_p,
             "max_tokens": max_new_tokens,
         }
-        resp = _post(port, "/v1/chat/completions", payload, timeout=600)
+        resp = _post(port, "/v1/chat/completions", payload, timeout=3600)
 
         for choice in resp["choices"]:
             content = choice["message"]["content"]
@@ -114,7 +114,7 @@ def generate_batch_raw(
             "logprob_start_len": len(input_ids),
         }
         try:
-            resp = _post(port, "/generate", payload, timeout=600)
+            resp = _post(port, "/generate", payload, timeout=3600)
         except Exception:
             # Fallback to text input
             payload_text = {

@@ -208,7 +208,7 @@ def run_training(args):
                 "max_tokens": args.max_new_tokens,
             }
             try:
-                resp = _post(args.port, "/v1/chat/completions", payload, timeout=600)
+                resp = _post(args.port, "/v1/chat/completions", payload, timeout=3600)
             except Exception as e:
                 print(f"  Generation error: {e}")
                 continue
