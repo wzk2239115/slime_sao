@@ -30,7 +30,7 @@ SITE_PKG="$ROOTFS/usr/local/lib/python3.12/dist-packages"
 HOST_SITE="/usr/local/lib/python3.12/dist-packages"
 
 MODEL="$WORKDIR/models/Qwen3-30B-A3B-Thinking-2507"
-TRAIN_DATA="$WORKDIR/datasets/AIME2025/slime/aime2025-all.jsonl"
+TRAIN_DATA="$WORKDIR/datasets/MATH_train.jsonl"
 SAVE_DIR="$WORKDIR/checkpoints/sao"
 QUEUE_DIR="$WORKDIR/queue"
 LOG_DIR="$WORKDIR/logs"
