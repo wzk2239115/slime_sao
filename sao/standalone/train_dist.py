@@ -230,10 +230,17 @@ def run_training(args):
     # ============ Training loop ============
     running_mean = 0.0
     current_model_path = args.model_path
+    train_t0 = time.time()
+    reward_history = []
 
     for step in range(args.num_steps):
+        pct = (step + 1) / args.num_steps
+        bar_len = 20
+        filled = int(bar_len * pct)
+        bar = "█" * filled + "░" * (bar_len - filled)
+
         print(f"\n{'='*60}")
-        print(f"Step {step+1}/{args.num_steps}")
+        print(f"[{bar}] {step+1}/{args.num_steps} ({pct:.0%})")
         print(f"{'='*60}")
 
         # ---- Phase 1: Rollout (remote sglang) ----
@@ -258,12 +265,10 @@ def run_training(args):
         mean_reward = sum(s.reward for s in all_samples) / max(len(all_samples), 1)
         for s in all_samples:
             running_mean = 0.95 * running_mean + 0.05 * s.reward
-
-        print(f"  Rollout: {len(all_samples)} samples, mean_reward={mean_reward:.3f}, "
-              f"running_mean={running_mean:.3f}, time={gen_time:.0f}s")
+        reward_history.append(mean_reward)
 
         if len(all_samples) < 2:
-            print("  Too few samples, skipping training step")
+            print("  Too few samples, skipping")
             continue
 
         # ---- Phase 2: Training (local HF model) ----
@@ -278,8 +283,17 @@ def run_training(args):
             max_seq_len=args.max_seq_len,
         )
         train_time = time.time() - t0
-        print(f"  Training: loss={loss:.4f}, clip_ratio={metrics['clip_ratio']:.3f}, "
-              f"mean_ratio={metrics['mean_ratio']:.3f}, time={train_time:.0f}s")
+
+        # ---- Progress line ----
+        elapsed = time.time() - train_t0
+        avg_step = elapsed / (step + 1)
+        eta = avg_step * (args.num_steps - step - 1)
+        recent_r = sum(reward_history[-10:]) / max(len(reward_history[-10:]), 1)
+
+        print(f"  reward={mean_reward:.2f} (avg10={recent_r:.2f}) | loss={loss:.4f} | "
+              f"clip={metrics['clip_ratio']:.1%} | ratio={metrics['mean_ratio']:.2f}")
+        print(f"  gen={gen_time:.0f}s train={train_time:.0f}s | "
+              f"elapsed={elapsed/60:.1f}min eta={eta/60:.1f}min")
 
         # ---- Phase 3: Save checkpoint + signal sglang reload ----
         if (step + 1) % args.save_interval == 0 or step == args.num_steps - 1:
