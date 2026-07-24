@@ -190,11 +190,11 @@ def train_critic_step(
             vals = critic(ids)[0]
             old_values_list.append(vals[-resp_len:].clone())
 
-    # Step 2: K iterations of value loss
+    # Step 2: K iterations of value loss (gradient accumulation per sample)
     output_device = critic.value_head.weight.device
     total_loss = 0.0
     for epoch in range(k_epochs):
-        epoch_loss = torch.tensor(0.0, device=output_device)
+        epoch_loss_val = 0.0
         total_tokens = 0
 
         optimizer.zero_grad()
@@ -209,21 +209,22 @@ def train_critic_step(
             old_v = old_v.to(resp_vals.device)
             ret = ret.to(resp_vals.device)
 
-            # Value clipping
             vals_clipped = old_v + (resp_vals - old_v).clamp(-value_clip, value_clip)
             loss_unclipped = (resp_vals - ret).pow(2)
             loss_clipped = (vals_clipped - ret).pow(2)
             loss = torch.max(loss_unclipped, loss_clipped).sum()
 
-            epoch_loss = epoch_loss + loss
+            # Per-sample backward (free graph immediately)
+            loss.backward()
+            epoch_loss_val += loss.item()
             total_tokens += resp_len
 
-        epoch_loss = epoch_loss / max(total_tokens, 1)
-        epoch_loss.backward()
+            del vals, resp_vals, loss, vals_clipped, loss_unclipped, loss_clipped
+
         torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=1.0)
         optimizer.step()
 
-        total_loss += epoch_loss.item()
+        total_loss += epoch_loss_val / max(total_tokens, 1)
 
     avg_loss = total_loss / k_epochs
     return avg_loss, {"critic_loss": avg_loss}
