@@ -105,26 +105,36 @@ def generate_via_sglang(
             print(f"  [worker] Generation failed: {e}")
             return None
 
-    if "output_ids" not in resp:
-        if "samples" in resp and resp["samples"]:
-            resp = resp["samples"][0]
-        elif "choices" in resp:
-            choice = resp["choices"][0]
-            text = choice.get("message", {}).get("content") or \
-                   choice.get("message", {}).get("reasoning_content") or ""
-            return {"text": text, "output_ids": [], "output_logprobs": []}
+    # Primary: extract from meta_info.output_token_logprobs
+    # Format: [[logprob, token_id, top_logprobs], ...]
+    meta = resp.get("meta_info", {})
+    logprob_data = meta.get("output_token_logprobs", [])
 
+    if logprob_data and isinstance(logprob_data[0], list):
+        output_ids = [entry[1] for entry in logprob_data]
+        output_logprobs = [
+            entry[0] if entry[0] is not None else 0.0
+            for entry in logprob_data
+        ]
+        text = resp.get("text", "")
+        return {
+            "output_ids": output_ids,
+            "output_logprobs": output_logprobs,
+            "text": text,
+        }
+
+    # Fallback: top-level output_ids (no logprobs)
     output_ids = resp.get("output_ids", [])
-    output_logprobs = resp.get("output_token_logprobs",
-                                resp.get("output_logprobs", []))
     text = resp.get("text", "")
 
-    if not output_ids and text:
-        pass
+    if not output_ids and "samples" in resp:
+        sample = resp["samples"][0] if resp["samples"] else {}
+        output_ids = sample.get("output_ids", [])
+        text = sample.get("text", "")
 
     return {
         "output_ids": output_ids,
-        "output_logprobs": output_logprobs,
+        "output_logprobs": [],
         "text": text,
     }
 

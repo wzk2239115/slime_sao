@@ -178,6 +178,15 @@ if [ "$PHASE" = "inference" ]; then
     pkill -9 launch_server 2>/dev/null || true
     sleep 2
     
+    # CUDA graph: default ON (much faster). Set DISABLE_CUDA_GRAPH=1 to disable.
+    CUDA_GRAPH_FLAG=""
+    if [ "${DISABLE_CUDA_GRAPH:-0}" = "1" ]; then
+        CUDA_GRAPH_FLAG="--disable-cuda-graph"
+        echo "  CUDA graph: DISABLED"
+    else
+        echo "  CUDA graph: ENABLED"
+    fi
+    
     python3 -m sglang.launch_server \
         --model-path "$SGLANG_MODEL" \
         --host 0.0.0.0 \
@@ -185,7 +194,7 @@ if [ "$PHASE" = "inference" ]; then
         --tp "$NUM_GPUS" \
         --mem-fraction-static 0.85 \
         --context-length 36864 \
-        --disable-cuda-graph \
+        $CUDA_GRAPH_FLAG \
         --reasoning-parser qwen3 \
         > "$LOG_DAEMON" 2>&1 &
     SGLANG_PID=$!
@@ -246,13 +255,15 @@ opener.open(req, timeout=5).read()
         pkill -9 sglang 2>/dev/null || true
         pkill -9 launch_server 2>/dev/null || true
         sleep 3
+        local cg_flag=""
+        [ "${DISABLE_CUDA_GRAPH:-0}" != "1" ] || cg_flag="--disable-cuda-graph"
         python3 -m sglang.launch_server \
             --model-path "$model_path" \
             --host 0.0.0.0 --port 30000 \
             --tp "$NUM_GPUS" \
             --mem-fraction-static 0.85 \
             --context-length 36864 \
-            --disable-cuda-graph \
+            $cg_flag \
             --reasoning-parser qwen3 \
             >> "$LOG_DAEMON" 2>&1 &
         SGLANG_PID=$!
