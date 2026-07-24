@@ -98,7 +98,10 @@ def start_inference():
 
     # Start sglang
     log_sglang = f"{WORKDIR}/logs/sglang_{hostname}.log"
-    print(f"Starting sglang... (log: {log_sglang})")
+    disable_cg = os.environ.get("DISABLE_CUDA_GRAPH", "0") == "1"
+    cg_flag = ["--disable-cuda-graph"] if disable_cg else []
+    cg_mode = "DISABLED" if disable_cg else "ENABLED"
+    print(f"Starting sglang (CUDA graph: {cg_mode})... (log: {log_sglang})")
     sglang = subprocess.Popen(
         ["python3", "-m", "sglang.launch_server",
          "--model-path", MODEL,
@@ -106,7 +109,7 @@ def start_inference():
          "--tp", num_gpu,
          "--mem-fraction-static", "0.85",
          "--context-length", "36864",
-         "--reasoning-parser", "qwen3"],
+         "--reasoning-parser", "qwen3"] + cg_flag,
         stdout=open(log_sglang, "w"), stderr=subprocess.STDOUT,
     )
     print(f"sglang PID: {sglang.pid}")
