@@ -23,10 +23,10 @@ class RolloutSample:
     meta: dict = field(default_factory=dict)
 
 
-def _post(port: int, path: str, payload: dict, timeout: int = 3600) -> dict:
+def _post(port: int, path: str, payload: dict, timeout: int = 3600, host: str = "127.0.0.1") -> dict:
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
-        f"http://127.0.0.1:{port}{path}",
+        f"http://{host}:{port}{path}",
         data=data,
         headers={"Content-Type": "application/json"},
     )

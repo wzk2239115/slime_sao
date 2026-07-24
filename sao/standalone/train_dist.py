@@ -1,0 +1,284 @@
+"""Distributed GRPO/SAO training: remote sglang + local HF training.
+
+Architecture:
+  - Inference machine (ctm-05): runs sglang daemon, generates responses
+  - Training machine (ctm-06): runs this script, computes gradients + updates model
+  - Shared storage: checkpoints visible to both machines
+  - Weight sync: training saves checkpoint → writes .reload_signal → daemon restarts sglang
+
+Usage:
+  python -m sao.standalone.train_dist \
+      --model-path /path/to/model \
+      --sglang-host 11.131.211.65 \
+      --sglang-port 30000 \
+      --data /path/to/train.jsonl \
+      --save-dir /shared/checkpoints \
+      --num-steps 100
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import random
+import sys
+import time
+from pathlib import Path
+
+import torch
+
+from .rollout import _post, RolloutSample
+from .reward import math_reward
+from .grpo_step import (
+    compute_grpo_advantages,
+    compute_sao_advantages,
+    compute_log_probs,
+    dis_policy_loss,
+    grpo_policy_loss,
+)
+
+
+def load_train_data(path: str) -> list[dict]:
+    data = []
+    with open(path) as f:
+        for line in f:
+            data.append(json.loads(line))
+    print(f"Loaded {len(data)} training prompts from {path}")
+    return data
+
+
+def wait_for_sglang(host: str, port: int, timeout: int = 900):
+    """Wait for remote sglang to be ready."""
+    import urllib.request
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        try:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            req = urllib.request.Request(f"http://{host}:{port}/health")
+            opener.open(req, timeout=5)
+            print(f"[sglang] Ready at {host}:{port} ({time.time()-t0:.0f}s)")
+            return True
+        except Exception:
+            time.sleep(3)
+    raise TimeoutError(f"sglang at {host}:{port} not ready within {timeout}s")
+
+
+def reload_sglang(save_dir: str):
+    """Signal the sglang daemon to reload weights."""
+    signal_file = os.path.join(save_dir, ".reload_signal")
+    with open(signal_file, "w") as f:
+        f.write(str(time.time()))
+    print(f"  [reload] Signal written, waiting for sglang to restart...")
+
+
+def generate_via_remote_sglang(
+    host: str,
+    port: int,
+    prompts: list[str],
+    ground_truths: list[str],
+    tokenizer,
+    n: int = 8,
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+    max_new_tokens: int = 32768,
+    model_name: str = "default",
+) -> list[RolloutSample]:
+    """Generate responses from remote sglang server."""
+    all_samples = []
+
+    for prompt_text, gt in zip(prompts, ground_truths):
+        messages = [{"role": "user", "content": prompt_text}]
+        full_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        prompt_ids = tokenizer(full_prompt, add_special_tokens=False)["input_ids"]
+
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": prompt_text}],
+            "n": n,
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_tokens": max_new_tokens,
+        }
+        try:
+            resp = _post(port, "/v1/chat/completions", payload, host=host, timeout=3600)
+        except Exception as e:
+            print(f"  Generation error: {e}")
+            continue
+
+        for choice in resp.get("choices", []):
+            msg = choice.get("message", {})
+            content = msg.get("content") or ""
+            reasoning = msg.get("reasoning_content") or ""
+            if not content:
+                content = reasoning
+            resp_ids = tokenizer(content, add_special_tokens=False)["input_ids"]
+            reward = math_reward(content, gt)
+
+            lp_data = choice.get("logprobs")
+            logprobs = []
+            if lp_data and lp_data.get("content"):
+                for lp in lp_data["content"]:
+                    logprobs.append(lp.get("logprob", 0.0))
+            if len(logprobs) != len(resp_ids):
+                logprobs = [0.0] * len(resp_ids)
+
+            all_samples.append(RolloutSample(
+                prompt_text=full_prompt,
+                response_text=content,
+                prompt_token_ids=prompt_ids,
+                response_token_ids=resp_ids,
+                response_logprobs=logprobs,
+                reward=reward,
+            ))
+
+    return all_samples
+
+
+def run_training(args):
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    data = load_train_data(args.data)
+    device = torch.device("cuda")
+
+    # ============ Tokenizer ============
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
+    tokenizer.padding_side = "left"
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # ============ Load model ONCE (stays on GPU for all steps) ============
+    print(f"\nLoading model from {args.model_path} ...")
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_path,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        trust_remote_code=True,
+        attn_implementation="flash_attention_2",
+    )
+    model.gradient_checkpointing_enable()
+    model.config.use_cache = False
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        betas=(args.beta1, args.beta2),
+    )
+
+    # ============ Wait for remote sglang ============
+    print(f"\nWaiting for sglang at {args.sglang_host}:{args.sglang_port}...")
+    wait_for_sglang(args.sglang_host, args.sglang_port)
+
+    # ============ Training loop ============
+    running_mean = 0.0
+    current_model_path = args.model_path
+
+    for step in range(args.num_steps):
+        print(f"\n{'='*60}")
+        print(f"Step {step+1}/{args.num_steps}")
+        print(f"{'='*60}")
+
+        # ---- Phase 1: Rollout (remote sglang) ----
+        batch_prompts = random.sample(data, min(args.batch_size, len(data)))
+        prompt_texts = [p["input"] for p in batch_prompts]
+        ground_truths = [p.get("label", p.get("answer", "")) for p in batch_prompts]
+
+        t0 = time.time()
+        all_samples = generate_via_remote_sglang(
+            host=args.sglang_host,
+            port=args.sglang_port,
+            prompts=prompt_texts,
+            ground_truths=ground_truths,
+            tokenizer=tokenizer,
+            n=args.n_samples,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            max_new_tokens=args.max_new_tokens,
+        )
+        gen_time = time.time() - t0
+
+        mean_reward = sum(s.reward for s in all_samples) / max(len(all_samples), 1)
+        for s in all_samples:
+            running_mean = 0.95 * running_mean + 0.05 * s.reward
+
+        print(f"  Rollout: {len(all_samples)} samples, mean_reward={mean_reward:.3f}, "
+              f"running_mean={running_mean:.3f}, time={gen_time:.0f}s")
+
+        if len(all_samples) < 2:
+            print("  Too few samples, skipping training step")
+            continue
+
+        # ---- Phase 2: Training (local HF model) ----
+        t0 = time.time()
+        loss, metrics = train_step(
+            model, optimizer, all_samples, tokenizer, device,
+            algo=args.algo,
+            clip_low=args.clip_low, clip_high=args.clip_high,
+            eps_clip=args.eps_clip, eps_clip_high=args.eps_clip_high,
+            running_mean=running_mean,
+            group_size=args.n_samples,
+            max_seq_len=args.max_seq_len,
+        )
+        train_time = time.time() - t0
+        print(f"  Training: loss={loss:.4f}, clip_ratio={metrics['clip_ratio']:.3f}, "
+              f"mean_ratio={metrics['mean_ratio']:.3f}, time={train_time:.0f}s")
+
+        # ---- Phase 3: Save checkpoint + signal sglang reload ----
+        if (step + 1) % args.save_interval == 0 or step == args.num_steps - 1:
+            ckpt_dir = os.path.join(args.save_dir, f"step_{step+1}")
+            print(f"  Saving checkpoint to {ckpt_dir}...")
+            os.makedirs(ckpt_dir, exist_ok=True)
+            model.save_pretrained(ckpt_dir, safe_serialization=True)
+            tokenizer.save_pretrained(ckpt_dir)
+            current_model_path = ckpt_dir
+
+            # Signal sglang daemon to reload
+            reload_sglang(args.save_dir)
+
+            # Wait for sglang to come back up
+            time.sleep(10)
+            wait_for_sglang(args.sglang_host, args.sglang_port, timeout=900)
+            print(f"  sglang reloaded with new weights.")
+
+        print(f"  Step {step+1} done.")
+
+    print(f"\n{'='*60}")
+    print(f"Training complete. Final checkpoint: {current_model_path}")
+    print(f"{'='*60}")
+
+
+from .grpo_step import train_step
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Distributed GRPO/SAO RL training")
+    parser.add_argument("--model-path", required=True)
+    parser.add_argument("--data", required=True)
+    parser.add_argument("--save-dir", required=True)
+    parser.add_argument("--sglang-host", required=True, help="Inference machine IP")
+    parser.add_argument("--sglang-port", type=int, default=30000)
+    parser.add_argument("--num-steps", type=int, default=100)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--n-samples", type=int, default=8)
+    parser.add_argument("--lr", type=float, default=1e-6)
+    parser.add_argument("--weight-decay", type=float, default=0.1)
+    parser.add_argument("--beta1", type=float, default=0.9)
+    parser.add_argument("--beta2", type=float, default=0.98)
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--top-p", type=float, default=1.0)
+    parser.add_argument("--max-new-tokens", type=int, default=32768)
+    parser.add_argument("--max-seq-len", type=int, default=32768)
+    parser.add_argument("--algo", choices=["sao", "grpo"], default="sao")
+    parser.add_argument("--clip-low", type=float, default=0.7)
+    parser.add_argument("--clip-high", type=float, default=6.0)
+    parser.add_argument("--eps-clip", type=float, default=0.2)
+    parser.add_argument("--eps-clip-high", type=float, default=0.28)
+    parser.add_argument("--save-interval", type=int, default=10)
+    args = parser.parse_args()
+
+    os.makedirs(args.save_dir, exist_ok=True)
+    run_training(args)
+
+
+if __name__ == "__main__":
+    main()
