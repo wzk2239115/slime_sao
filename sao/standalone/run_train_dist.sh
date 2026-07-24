@@ -42,6 +42,12 @@ LOG_FILE="$WORKDIR/dist_train_${TAG}_$(date +%Y%m%d_%H%M%S).log"
 mkdir -p "$SAVE_DIR"
 cd "$WORKDIR"
 
+# 检测 GPU 数量
+NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+echo "GPUs on this machine: $NUM_GPUS"
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-all}"
+nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader 2>/dev/null
+
 echo "SGLANG_HOST=$SGLANG_HOST"
 echo "SAVE_DIR=$SAVE_DIR"
 echo "LOG=$LOG_FILE"

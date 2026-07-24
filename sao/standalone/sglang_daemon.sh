@@ -33,6 +33,13 @@ CKPT_DIR="$WORKDIR/checkpoints/sao_dist"
 PORT=30000
 RELOAD_FILE="$CKPT_DIR/.reload_signal"
 
+# 自动检测 GPU 数量
+NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+if [ -z "$NUM_GPUS" ] || [ "$NUM_GPUS" -eq 0 ]; then
+    NUM_GPUS=${TP:-4}
+fi
+echo "[daemon] Detected $NUM_GPUS GPUs, using TP=$NUM_GPUS"
+
 mkdir -p "$CKPT_DIR"
 
 get_latest_ckpt() {
@@ -64,7 +71,7 @@ while true; do
         --model-path "$MODEL_PATH" \
         --host 0.0.0.0 \
         --port "$PORT" \
-        --tp 4 \
+        --tp "$NUM_GPUS" \
         --mem-fraction-static 0.85 \
         --context-length 36864 \
         --disable-cuda-graph \
