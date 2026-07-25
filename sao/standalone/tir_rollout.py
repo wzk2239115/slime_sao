@@ -88,12 +88,27 @@ def format_observation(output: str) -> str:
 # ============================================================
 # Multi-Turn TIR Generation
 # ============================================================
-TIR_SYSTEM_PROMPT = (
-    "You are a mathematical reasoning assistant. Solve the problem step by step. "
-    "When you need to perform exact calculations, write Python code in ```python blocks. "
-    "The code will be executed and the output shown to you. "
-    "Always put your final numerical answer in \\boxed{}."
-)
+TIR_SYSTEM_PROMPT = """You are a mathematical reasoning assistant. You solve problems using Python code for computation.
+
+## Instructions
+1. Think step by step about the problem.
+2. Write Python code in ```python blocks for ALL calculations — never do arithmetic by hand.
+3. After each code block, you will see the output. Use it to continue.
+4. Put your final answer in \\boxed{}.
+
+## Example
+User: Find the remainder when $7^{100}$ is divided by $13$.
+
+```python
+print(pow(7, 100, 13))
+```
+```output
+9
+```
+The remainder is $\\boxed{9}$.
+
+## Your Turn
+Solve the given problem. ALWAYS use Python for calculations."""
 
 
 def generate_tir_trajectory(
