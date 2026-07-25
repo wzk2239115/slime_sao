@@ -257,27 +257,28 @@ def start_train():
     print(f"  TTUR K=2  warmup=10  frozen_attn  8bit_adam")
     print()
 
-    trainer = subprocess.Popen(
-        ["python3", "-m", "sao.standalone.trainer",
-         "--model-path", MODEL,
-         "--critic-path", MODEL,
-         "--queue-dir", "queue",
-         "--save-dir", "checkpoints/sao",
-         "--num-steps", "1000",
-         "--batch-size", "8",
-         "--lr", "1e-6", "--critic-lr", "5e-6",
-         "--clip-low", "0.7", "--clip-high", "6.0",
-         "--gamma", "1.0", "--gae-alpha", "1.5",
-         "--critic-k", "2", "--critic-warmup", "10",
-         "--value-clip", "0.2", "--save-interval", "50",
-         "--max-seq-len", str(MAX_TOKENS),
-         "--use-8bit-adam"],
-        stdout=open(log_file, "w", buffering=1), stderr=subprocess.STDOUT,
-    )
-    print(f"Trainer PID: {trainer.pid}")
+    import shlex
+    trainer_cmd = [
+        "python3", "-m", "sao.standalone.trainer",
+        "--model-path", MODEL,
+        "--critic-path", MODEL,
+        "--queue-dir", "queue",
+        "--save-dir", "checkpoints/sao",
+        "--num-steps", "1000",
+        "--batch-size", "8",
+        "--lr", "1e-6", "--critic-lr", "5e-6",
+        "--clip-low", "0.7", "--clip-high", "6.0",
+        "--gamma", "1.0", "--gae-alpha", "1.5",
+        "--critic-k", "2", "--critic-warmup", "10",
+        "--value-clip", "0.2", "--save-interval", "50",
+        "--max-seq-len", str(MAX_TOKENS),
+        "--use-8bit-adam",
+    ]
+    cmd_str = " ".join(shlex.quote(a) for a in trainer_cmd)
+    print(f"Trainer PID: starting...")
     print(f"\n Monitor: tail -f {log_file}")
-    print(f" Stop:    BASH_ENV= python3 sao/standalone/launch.py stop")
-    trainer.wait()
+    print(f" Stop:    BASH_ENV= python3 sao/standalone/launch.py stop\n")
+    os.system(f"{cmd_str} 2>&1 | tee {log_file}")
 
 
 # ============================================================
