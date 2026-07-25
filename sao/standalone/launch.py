@@ -267,6 +267,7 @@ def start_train():
          "--value-clip", "0.2", "--save-interval", "50",
          "--max-seq-len", str(MAX_TOKENS),
          "--use-8bit-adam"],
+        stdout=open(log_file, "w"), stderr=subprocess.STDOUT,
     )
     print(f"Trainer PID: {trainer.pid}")
     print(f"\n Monitor: tail -f {log_file}")
