@@ -270,7 +270,7 @@ def render(once=False):
         warnings = []
         if pending == 0 and done < 8:
             warnings.append("Queue empty! Inference machines may not be generating.")
-        if pending > 200:
+        if pending > 2000:
             warnings.append(f"Queue backlog: {pending} pending. Trainer may be too slow.")
         if trainer and not trainer.get("active"):
             warnings.append("Trainer hasn't updated in 5+ minutes. May be stuck or crashed.")
