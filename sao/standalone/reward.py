@@ -29,7 +29,8 @@ def extract_boxed(text: str | None) -> str | None:
 
 def normalize_answer(ans: str) -> str:
     """Normalize a math answer string for comparison."""
-    ans = ans.strip()
+    original = ans.strip()
+    ans = original
     # Remove LaTeX backslash commands: \sqrt → sqrt, \frac → frac
     ans = ans.replace("\\", "")
     # Remove whitespace, braces, dollar signs, percent
@@ -58,7 +59,7 @@ def normalize_answer(ans: str) -> str:
         pass
 
     # Fallback: if normalization produced empty, return original
-    return ans if len(ans) > 0 else str.strip()
+    return ans if len(ans) > 0 else original
 
 
 def math_reward(response: str | None, ground_truth: str) -> float:
