@@ -191,7 +191,10 @@ def start_inference():
 
     # Start rollout worker
     log_rollout = f"{WORKDIR}/logs/rollout_{hostname}.log"
-    print(f"Starting rollout worker... (log: {log_rollout})")
+    enable_tir = os.environ.get("ENABLE_TIR", "0") == "1"
+    tir_flag = ["--enable-tir"] if enable_tir else []
+    tir_mode = "TIR (Python tools)" if enable_tir else "pure reasoning"
+    print(f"Starting rollout worker ({tir_mode})... (log: {log_rollout})")
     rollout = subprocess.Popen(
         ["python3", "-m", "sao.standalone.rollout_worker",
          "--model-path", MODEL,
@@ -199,7 +202,7 @@ def start_inference():
          "--sglang-host", "127.0.0.1", "--sglang-port", str(PORT),
          "--queue-dir", "queue", "--checkpoint-dir", "checkpoints/sao",
          "--temperature", "1.0", "--top-p", "1.0",
-         "--max-new-tokens", str(MAX_TOKENS)],
+         "--max-new-tokens", str(MAX_TOKENS)] + tir_flag,
         stdout=open(log_rollout, "w"), stderr=subprocess.STDOUT,
     )
     print(f"rollout PID: {rollout.pid}")

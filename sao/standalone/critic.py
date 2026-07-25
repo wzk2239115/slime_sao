@@ -74,33 +74,73 @@ class ValueModel(nn.Module):
 # GAE (Generalized Advantage Estimation)
 # ============================================================
 def compute_gae_single(
-    values: torch.Tensor,  # [resp_len] V(s_t) for response tokens
-    reward: float,         # scalar reward for the trajectory
+    values: torch.Tensor,
+    reward: float,
     gamma: float = 1.0,
     lambd: float = 1.0,
+    action_mask: list[int] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Token-level GAE for a single trajectory.
 
-    For math reasoning, reward is sparse at the end (last token gets reward).
+    Paper §3.2 Skip-Obs GAE (Eq.4-5): when action_mask is provided,
+    observation tokens (mask=0) are skipped. Advantage bridges from
+    end of one action segment to start of next action segment.
+
+    Without action_mask (all None): standard GAE (pure reasoning mode).
 
     Returns:
         advantages: [resp_len]
-        returns: [resp_len] = advantages + values (target for critic)
+        returns: [resp_len] = advantages + values
     """
     T = len(values)
     advantages = torch.zeros(T, device=values.device, dtype=values.dtype)
 
-    # Build reward vector: all zeros except last token
     rewards = torch.zeros(T, device=values.device, dtype=values.dtype)
     rewards[-1] = reward
 
-    # Backward GAE accumulation
-    lastgae = 0.0
-    for t in reversed(range(T)):
-        next_val = values[t + 1] if t < T - 1 else 0.0
-        delta = rewards[t] + gamma * next_val - values[t]
-        lastgae = delta + gamma * lambd * lastgae
-        advantages[t] = lastgae
+    if action_mask is None:
+        action_mask = [1] * T
+
+    # Find action segments: [(start, end), ...] where mask=1
+    segments = []
+    in_action = False
+    seg_start = 0
+    for t in range(T):
+        if action_mask[t] == 1 and not in_action:
+            seg_start = t
+            in_action = True
+        elif action_mask[t] == 0 and in_action:
+            segments.append((seg_start, t - 1))
+            in_action = False
+    if in_action:
+        segments.append((seg_start, T - 1))
+
+    if not segments:
+        return advantages, values.clone()
+
+    # Backward GAE across action segments (Skip-Obs)
+    lastgae = torch.tensor(0.0, device=values.device, dtype=values.dtype)
+
+    for seg_idx in reversed(range(len(segments))):
+        seg_start, seg_end = segments[seg_idx]
+
+        # Next action's first token value (for cross-segment TD bridge)
+        if seg_idx < len(segments) - 1:
+            next_action_start = segments[seg_idx + 1][0]
+            next_val = values[next_action_start]
+        else:
+            next_val = torch.tensor(0.0, device=values.device, dtype=values.dtype)
+
+        for t in range(seg_end, seg_start - 1, -1):
+            if t == seg_end:
+                # Last token of action: bridge to next action (Eq.5)
+                delta = rewards[t] + gamma * next_val - values[t]
+            else:
+                # Normal TD within action segment
+                next_v = values[t + 1]
+                delta = rewards[t] + gamma * next_v - values[t]
+            lastgae = delta + gamma * lambd * lastgae
+            advantages[t] = lastgae
 
     returns = advantages + values
     return advantages, returns
@@ -114,35 +154,35 @@ def length_adaptive_lambda(resp_len: int, alpha: float = 1.5) -> float:
 
 
 def compute_gae_batch(
-    values_list: list[torch.Tensor],  # per-sample [resp_len_i]
+    values_list: list[torch.Tensor],
     rewards: list[float],
     response_lens: list[int],
     gamma: float = 1.0,
     alpha: float = 1.5,
     use_length_adaptive: bool = True,
     critic_lambd: float = 1.0,
+    action_masks: list[list[int]] | None = None,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-    """GAE for a batch of samples.
+    """GAE for a batch of samples. Supports Skip-Obs GAE (TIR).
 
-    Returns:
-        advantages_list: per-sample advantages
-        returns_list: per-sample returns (for critic training)
+    Args:
+        action_masks: per-token [1=action, 0=observation] for each sample.
+                      None for pure reasoning (all action tokens).
     """
     adv_list = []
     ret_list = []
 
-    for values, reward, resp_len in zip(values_list, rewards, response_lens):
+    for i, (values, reward, resp_len) in enumerate(zip(values_list, rewards, response_lens)):
         vals = values[:resp_len].detach()
+        mask = action_masks[i] if action_masks else None
 
-        # Actor advantages: length-adaptive λ_policy = 1-1/(α·L)
         if use_length_adaptive:
             lam_policy = length_adaptive_lambda(resp_len, alpha)
         else:
             lam_policy = critic_lambd
-        adv, _ = compute_gae_single(vals, reward, gamma=gamma, lambd=lam_policy)
 
-        # Critic returns: λ_critic = 1 (pure Monte-Carlo return, paper §4.1)
-        _, ret = compute_gae_single(vals, reward, gamma=gamma, lambd=1.0)
+        adv, _ = compute_gae_single(vals, reward, gamma=gamma, lambd=lam_policy, action_mask=mask)
+        _, ret = compute_gae_single(vals, reward, gamma=gamma, lambd=1.0, action_mask=mask)
 
         adv_list.append(adv)
         ret_list.append(ret)
@@ -171,23 +211,18 @@ def compute_values(
 
 def train_critic_step(
     critic: ValueModel,
-    optimizer: torch.optim.Optimizer,
+    optimizer,
     input_ids_list: list[torch.Tensor],
     response_lens: list[int],
-    returns_list: list[torch.Tensor],  # targets from GAE
+    returns_list: list[torch.Tensor],
     device: torch.device,
     value_clip: float = 0.2,
     k_epochs: int = 2,
+    action_masks: list[list[int]] | None = None,
 ) -> tuple[float, dict]:
-    """SAO critic training with TTUR (K=2) and value clipping.
+    """SAO critic training with TTUR (K=2), value clipping, and action masking.
 
-    Steps:
-      1. Forward once (no grad) → V_old (clip reference)
-      2. Repeat K times:
-         - Forward (with grad) → V_new
-         - V_clipped = V_old + clip(V_new - V_old, -ε_v, ε_v)
-         - Loss = max((V_new - R)², (V_clipped - R)²)
-         - Backward + step
+    With action_masks (TIR): only compute value loss on action tokens.
     """
     # Step 1: Get V_old (clip reference)
     old_values_list = []
@@ -219,7 +254,14 @@ def train_critic_step(
             vals_clipped = old_v + (resp_vals - old_v).clamp(-value_clip, value_clip)
             loss_unclipped = (resp_vals - ret).pow(2)
             loss_clipped = (vals_clipped - ret).pow(2)
-            loss = torch.max(loss_unclipped, loss_clipped).sum()
+            loss = torch.max(loss_unclipped, loss_clipped)
+
+            # Mask out observation tokens (TIR): only train on action tokens
+            if action_masks is not None:
+                am = torch.tensor(action_masks[i], device=resp_vals.device, dtype=resp_vals.dtype)
+                loss = loss * am
+
+            loss = loss.sum()
 
             # Per-sample backward (free graph immediately)
             loss.backward()

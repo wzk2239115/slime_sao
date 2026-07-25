@@ -316,13 +316,12 @@ def test_frozen_attention():
     class MockBase(nn.Module):
         def __init__(self):
             super().__init__()
-            self.q_proj = nn.Linear(10, 10)   # attention-like
-            self.k_proj = nn.Linear(10, 10)
-            self.v_proj = nn.Linear(10, 10)
-            self.o_proj = nn.Linear(10, 10)
-            self.moe_gate = nn.Linear(10, 10)  # MoE-like (trainable)
+            self.self_attn = nn.Module()
+            self.self_attn.q_proj = nn.Linear(10, 10)
+            self.self_attn.q_norm = nn.Linear(10, 10)
+            self.moe_gate = nn.Linear(10, 10)
         def forward(self, x):
-            return self.o_proj(self.v_proj(self.k_proj(self.q_proj(x))))
+            return self.moe_gate(self.self_attn.q_norm(self.self_attn.q_proj(x)))
 
     base = MockBase()
     vm = ValueModel(base, hidden_size=10)
@@ -335,7 +334,7 @@ def test_frozen_attention():
     # After freeze: self_attn params frozen, moe still trainable
     n_after = sum(1 for p in vm.parameters() if p.requires_grad)
     assert n_after < n_before, f"freeze should reduce trainable: {n_before} → {n_after}"
-    assert not vm.model.q_proj.weight.requires_grad, "q_proj should be frozen"
+    assert not vm.model.self_attn.q_proj.weight.requires_grad, "q_proj should be frozen"
     assert vm.model.moe_gate.weight.requires_grad, "moe_gate should be trainable"
     print(f"✓ test_frozen_attention (frozen {n_before - n_after} params)")
 

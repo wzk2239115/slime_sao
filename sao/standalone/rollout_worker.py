@@ -194,38 +194,49 @@ def run_rollout_worker(args):
         )
         prompt_ids = tokenizer(full_prompt, add_special_tokens=False)["input_ids"]
 
-        result = generate_via_sglang(
-            port=args.sglang_port,
-            prompt_ids=prompt_ids,
-            host=args.sglang_host,
-            temperature=args.temperature,
-            top_p=args.top_p,
-            max_new_tokens=args.max_new_tokens,
-        )
-
-        if result is None:
-            time.sleep(5)
-            continue
-
-        output_ids = result.get("output_ids", [])
-        output_logprobs = result.get("output_logprobs", [])
-        text = result.get("text", "")
-
-        if not output_ids:
-            resp_text = text or ""
-            resp_ids = tokenizer(resp_text, add_special_tokens=False)["input_ids"]
-            output_logprobs = [0.0] * len(resp_ids)
+        if getattr(args, "enable_tir", False):
+            # TIR mode: multi-turn with Python code execution
+            from .tir_rollout import generate_tir_trajectory
+            result = generate_tir_trajectory(
+                port=args.sglang_port,
+                prompt_ids=prompt_ids,
+                tokenizer=tokenizer,
+                host=args.sglang_host,
+                max_turns=args.tir_max_turns,
+                max_new_tokens=args.tir_max_tokens_per_turn,
+                temperature=args.temperature,
+                top_p=args.top_p,
+                code_timeout=args.tir_code_timeout,
+                context_limit=args.max_seq_len,
+            )
+            resp_ids = result["resp_ids"]
+            output_logprobs = result["token_logprobs"]
+            text = result["text"]
+            action_mask = result["action_mask"]
+            n_code = result["n_code_exec"]
         else:
-            resp_ids = output_ids
-            if not text:
-                text = tokenizer.decode(resp_ids, skip_special_tokens=False)
-            if len(output_logprobs) != len(resp_ids):
-                print(f"  [worker] WARN: logprob len {len(output_logprobs)} != "
-                      f"token len {len(resp_ids)}, padding with 0.0")
-                if len(output_logprobs) < len(resp_ids):
-                    output_logprobs.extend([0.0] * (len(resp_ids) - len(output_logprobs)))
-                else:
-                    output_logprobs = output_logprobs[:len(resp_ids)]
+            # Standard single-turn generation
+            result = generate_via_sglang(
+                port=args.sglang_port,
+                prompt_ids=prompt_ids,
+                host=args.sglang_host,
+                temperature=args.temperature,
+                top_p=args.top_p,
+                max_new_tokens=args.max_new_tokens,
+            )
+            if result is None:
+                time.sleep(5)
+                continue
+            resp_ids = result.get("output_ids", [])
+            output_logprobs = result.get("output_logprobs", [])
+            text = result.get("text", "")
+            action_mask = None
+            n_code = 0
+
+            if not resp_ids:
+                resp_text = text or ""
+                resp_ids = tokenizer(resp_text, add_special_tokens=False)["input_ids"]
+                output_logprobs = [0.0] * len(resp_ids)
 
         reward = math_reward(text, gt)
 
@@ -249,6 +260,8 @@ def run_rollout_worker(args):
             "timestamp": time.time(),
             "resp_len": len(resp_ids),
             "prompt_len": len(prompt_ids),
+            "action_mask": action_mask,
+            "n_code_exec": n_code,
         }
         traj_file = os.path.join(pending_dir, f"traj_{worker_id}_{traj_id:08d}.json")
         tmp_file = traj_file + ".tmp"
@@ -288,6 +301,12 @@ def main():
     parser.add_argument("--max-new-tokens", type=int, default=32768)
     parser.add_argument("--max-seq-len", type=int, default=32768)
     parser.add_argument("--max-trajectories", type=int, default=100000)
+    parser.add_argument("--enable-tir", action="store_true",
+                        help="Enable Tool-Integrated Reasoning (Python code execution)")
+    parser.add_argument("--tir-max-turns", type=int, default=20,
+                        help="Max code execution turns for TIR")
+    parser.add_argument("--tir-max-tokens-per-turn", type=int, default=2048)
+    parser.add_argument("--tir-code-timeout", type=int, default=10)
     args = parser.parse_args()
     run_rollout_worker(args)
 

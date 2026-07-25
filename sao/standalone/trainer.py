@@ -181,6 +181,7 @@ def run_trainer(args):
         response_lens = []
         rollout_log_probs_list = []
         rewards_float = []
+        action_masks_list = []
 
         for t in trajs:
             prompt_ids = t.get("prompt_ids", [])
@@ -199,6 +200,11 @@ def run_trainer(args):
                 rlp = [0.0] * len(resp_ids)
             rollout_log_probs_list.append(torch.tensor(rlp, dtype=torch.float32))
             rewards_float.append(t.get("reward", 0.0))
+            am = t.get("action_mask")
+            if am and len(am) == len(resp_ids):
+                action_masks_list.append(am)
+            else:
+                action_masks_list.append(None)
 
         if len(input_ids_list) < 2:
             time.sleep(5)
@@ -215,9 +221,14 @@ def run_trainer(args):
         torch.cuda.empty_cache()
         log_gpu_mem("post_critic_forward")
 
+        # Determine if we have action masks (TIR mode)
+        has_masks = any(am is not None for am in action_masks_list)
+        masks_for_gae = action_masks_list if has_masks else None
+
         advantages_list, returns_list = compute_gae_batch(
             values_list, rewards_float, response_lens,
             gamma=args.gamma, alpha=args.gae_alpha,
+            action_masks=masks_for_gae,
         )
 
         # ---- Actor step (DIS) — gradient accumulation, 1 sample at a time ----
@@ -244,6 +255,7 @@ def run_trainer(args):
             sample_loss, sample_metrics = dis_policy_loss(
                 tlp, single_rlp, single_adv,
                 clip_low=args.clip_low, clip_high=args.clip_high,
+                action_masks=masks_for_gae,
             )
             # Scale by this sample's fraction of total tokens
             (sample_loss * response_lens[i] / total_tokens).backward()
@@ -273,6 +285,7 @@ def run_trainer(args):
                 critic, critic_optimizer, input_ids_list, response_lens,
                 returns_list, device,
                 value_clip=args.value_clip, k_epochs=args.critic_k,
+                action_masks=masks_for_gae,
             )
             log_gpu_mem("post_critic_train")
             del _

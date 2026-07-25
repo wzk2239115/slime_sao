@@ -77,28 +77,21 @@ def compute_log_probs(
 def dis_policy_loss(
     train_log_probs: list[torch.Tensor],
     rollout_log_probs: list[torch.Tensor],
-    advantages: list[float],
-    clip_low: float = 0.7,   # 1 - ε_l  (SAO TIR: ε_l=0.3)
-    clip_high: float = 6.0,  # 1 + ε_h  (SAO TIR: ε_h=5.0)
+    advantages: list,
+    clip_low: float = 0.7,
+    clip_high: float = 6.0,
+    action_masks: list[list[int]] | None = None,
 ) -> tuple[torch.Tensor, dict]:
-    """SAO DIS policy gradient loss (Eq. 1-3).
+    """SAO DIS policy gradient loss (Eq.1-3).
 
-    L = -mean_t[ f(r_t; ε_l, ε_h) · Â_t · 1 ]  (log π already in train_log_probs via ratio)
-
-    Actually, following SAO Eq.1:
-      L(θ) = E[ f(r_t, ε_l, ε_h) · Â_t · log π_θ(a_t|s_t) ]
-    
-    But the standard PPO formulation uses ratio * advantage:
-      pg_loss = -ratio * advantage
-    
-    With DIS mask applied. We follow the ratio formulation since it's
-    equivalent and more numerically stable.
+    With action_masks (TIR): only compute loss on action tokens (mask=1).
+    Observation tokens (mask=0) are excluded from gradient.
     """
     total_loss = torch.tensor(0.0, device=train_log_probs[0].device)
     total_tokens = 0
     total_clipped = 0
 
-    for tlp, rlp, adv in zip(train_log_probs, rollout_log_probs, advantages):
+    for i, (tlp, rlp, adv) in enumerate(zip(train_log_probs, rollout_log_probs, advantages)):
         rlp = rlp.to(tlp.device)
         ratio = torch.exp(tlp - rlp)
         if isinstance(adv, torch.Tensor):
@@ -108,12 +101,20 @@ def dis_policy_loss(
 
         # DIS mask: zero out tokens outside [clip_low, clip_high]
         in_region = (ratio >= clip_low) & (ratio <= clip_high)
-        mask = in_region.to(tlp.dtype)
+        dis_mask = in_region.to(tlp.dtype)
 
-        # Policy loss: -ratio * advantage * mask (negative for gradient descent)
+        # Action mask: zero out observation tokens (TIR)
+        if action_masks is not None:
+            am = torch.tensor(action_masks[i], device=tlp.device, dtype=tlp.dtype)
+            mask = dis_mask * am
+            n_tokens = int(am.sum().item())
+        else:
+            mask = dis_mask
+            n_tokens = len(tlp)
+
         sample_loss = -(ratio * adv_t * mask).sum()
         total_loss = total_loss + sample_loss
-        total_tokens += len(tlp)
+        total_tokens += n_tokens
         total_clipped += (1 - mask).sum().item()
 
     loss = total_loss / max(total_tokens, 1)
