@@ -61,8 +61,16 @@ def parse_rollout_log(logfile):
 
     stats["last_line"] = lines[-1].strip()
 
-    # Parse progress lines: [N] r=X avg100=Y len=Z rate=W/min elapsed=Vmin
+    # Parse progress lines: [hostname:N] total=N avg100=Y rate=W/min elapsed=Vmin
     for line in reversed(lines):
+        m = re.search(r'\[.*?:(\d+)\]\s+total=(\d+)\s+avg100=([\d.]+).*?rate=([\d.]+)/min\s+elapsed=([\d.]+)min', line)
+        if m:
+            stats["trajectories"] = int(m.group(2))
+            stats["avg_reward"] = float(m.group(3))
+            stats["rate"] = float(m.group(4))
+            stats["elapsed_min"] = float(m.group(5))
+            break
+        # Old format: [N] r=X avg100=Y len=Z rate=W/min elapsed=Vmin
         m = re.search(r'\[(\d+)\]\s+r=([\d.]+)\s+avg100=([\d.]+)\s+len=(\d+)\s+rate=([\d.]+)/min\s+elapsed=([\d.]+)min', line)
         if m:
             stats["trajectories"] = int(m.group(1)) + 1
