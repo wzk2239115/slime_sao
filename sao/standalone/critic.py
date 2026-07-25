@@ -54,9 +54,16 @@ class ValueModel(nn.Module):
         return values
 
     def freeze_attention(self):
-        """SAO §3.2: freeze attention params, only train MoE + value head."""
+        """SAO §3.2: freeze attention params, only train MoE + value head.
+        
+        Qwen3-MoE attention module (self_attn) contains:
+          q_proj, k_proj, v_proj, o_proj, q_norm, k_norm
+        All must be frozen per the paper.
+        """
         for name, param in self.named_parameters():
-            if any(pat in name for pat in ["self_attention", "attention", "q_proj", "k_proj", "v_proj", "o_proj", "qkv"]):
+            # "self_attn" catches ALL attention params (q/k/v/o_proj + q/k_norm)
+            # "post_attention_layernorm" is tied to attention output
+            if any(pat in name for pat in ["self_attn", "post_attention_layernorm"]):
                 param.requires_grad = False
         n_frozen = sum(1 for _, p in self.named_parameters() if not p.requires_grad)
         n_total = sum(1 for _ in self.parameters())
