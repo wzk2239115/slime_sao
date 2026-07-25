@@ -155,7 +155,7 @@ def run_rollout_worker(args):
     os.makedirs(pending_dir, exist_ok=True)
 
     traj_id = 0
-    current_ckpt = None
+    current_ckpt = get_latest_checkpoint(args.checkpoint_dir)  # Don't reload what's already loaded
     rewards_recent = []
     t0 = time.time()
     worker_id = f"{int(time.time())}_{random.randint(1000,9999)}"
