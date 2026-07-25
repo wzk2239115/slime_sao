@@ -239,7 +239,12 @@ def run_trainer(args):
         try:
             all_ret = torch.cat([r.flatten() for r in returns_list])
             all_val = torch.cat([v.flatten() for v in values_list])
-            explained_variance = (1.0 - (all_ret - all_val).var() / all_ret.var().clamp(min=1e-8)).item()
+            var_ret = all_ret.var()
+            if var_ret > 1e-6:
+                explained_variance = (1.0 - (all_ret - all_val).var() / var_ret).item()
+                explained_variance = max(-1.0, min(1.0, explained_variance))
+            else:
+                explained_variance = 0.0  # All same reward → EV undefined
         except Exception:
             explained_variance = 0.0
 
