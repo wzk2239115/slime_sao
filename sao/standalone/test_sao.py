@@ -354,6 +354,7 @@ def test_math_data_reward():
     from sao.standalone.reward import normalize_answer
 
     # 读前 100 条，验证 ground truth 格式
+    empty_count = 0
     with open(data_path) as f:
         for i, line in enumerate(f):
             if i >= 100:
@@ -361,10 +362,11 @@ def test_math_data_reward():
             d = json.loads(line)
             gt = d["label"]
             normalized = normalize_answer(gt)
-            # Ground truth should normalize to something non-empty
             if len(normalized) == 0:
-                print(f"  ⚠️  Line {i}: label={repr(gt)} → empty normalized, skipping")
+                empty_count += 1
                 continue
+    if empty_count > 10:
+        print(f"  ⚠️  {empty_count}/100 empty labels — MATH_train.jsonl may need regeneration")
 
     print(f"✓ test_math_data_reward (100 samples validated)")
 
