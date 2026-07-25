@@ -109,8 +109,8 @@ def get_recent_rewards(n=20):
 
 
 def get_trainer_status():
-    """Parse latest trainer log."""
-    logs = sorted(glob.glob(f"{LOG_DIR}/trainer_*.log"))
+    """Parse latest trainer log (by modification time)."""
+    logs = sorted(glob.glob(f"{LOG_DIR}/trainer_*.log"), key=os.path.getmtime)
     if not logs:
         return None
 

@@ -194,7 +194,8 @@ def start_inference():
     enable_tir = os.environ.get("ENABLE_TIR", "0") == "1"
     tir_flag = ["--enable-tir"] if enable_tir else []
     tir_mode = "TIR (Python tools)" if enable_tir else "pure reasoning"
-    print(f"Starting rollout worker ({tir_mode})... (log: {log_rollout})")
+    concurrency = os.environ.get("CONCURRENCY", "1")
+    print(f"Starting rollout worker ({tir_mode}, concurrency={concurrency})... (log: {log_rollout})")
     rollout = subprocess.Popen(
         ["python3", "-m", "sao.standalone.rollout_worker",
          "--model-path", MODEL,
@@ -202,7 +203,8 @@ def start_inference():
          "--sglang-host", "127.0.0.1", "--sglang-port", str(PORT),
          "--queue-dir", "queue", "--checkpoint-dir", "checkpoints/sao",
          "--temperature", "1.0", "--top-p", "1.0",
-         "--max-new-tokens", str(MAX_TOKENS)] + tir_flag,
+         "--max-new-tokens", str(MAX_TOKENS),
+         "--concurrency", concurrency] + tir_flag,
         stdout=open(log_rollout, "w"), stderr=subprocess.STDOUT,
     )
     print(f"rollout PID: {rollout.pid}")
@@ -270,7 +272,7 @@ def start_train():
          "--value-clip", "0.2", "--save-interval", "50",
          "--max-seq-len", str(MAX_TOKENS),
          "--use-8bit-adam"],
-        stdout=open(log_file, "w"), stderr=subprocess.STDOUT,
+        stdout=open(log_file, "w", buffering=1), stderr=subprocess.STDOUT,
     )
     print(f"Trainer PID: {trainer.pid}")
     print(f"\n Monitor: tail -f {log_file}")

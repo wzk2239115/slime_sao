@@ -1,8 +1,8 @@
 """Async rollout worker: continuously generates trajectories and writes to queue.
 
 Uses sglang /generate API for exact token IDs + log-probs alignment.
-This is CRITICAL for DIS: ratio = exp(log_pi_theta - log_pi_rollout)
-If token IDs don't match, the ratio is meaningless.
+Supports concurrent generation (multiple trajectories in parallel).
+Supports TIR (Tool-Integrated Reasoning) with Python code execution.
 
 Paper §3.2: "a sample is immediately fed into training upon generation"
 Paper §3.1: "we directly use π_rollout log-probabilities"
@@ -12,7 +12,8 @@ Usage:
         --sglang-host 127.0.0.1 --sglang-port 30000 \
         --data /path/to/train.jsonl \
         --queue-dir /shared/queue \
-        --checkpoint-dir /shared/checkpoints
+        --checkpoint-dir /shared/checkpoints \
+        --concurrency 4
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ import json
 import os
 import random
 import socket
+import threading
 import time
 
 from .rollout import _post
@@ -53,13 +55,6 @@ def generate_via_sglang(
     max_new_tokens: int,
     timeout: int = 3600,
 ) -> dict | None:
-    """Generate via sglang /generate API with return_logprob=True.
-
-    Returns dict with keys:
-      - output_ids: list[int]     generated token IDs
-      - output_logprobs: list[float]  log π_rollout for each output token
-      - text: str                 decoded text
-    """
     payload = {
         "input_ids": prompt_ids,
         "sampling_params": {
@@ -103,11 +98,8 @@ def generate_via_sglang(
                 "output_logprobs": logprobs,
             }
         except Exception as e:
-            print(f"  [worker] Generation failed: {e}")
             return None
 
-    # Primary: extract from meta_info.output_token_logprobs
-    # Format: [[logprob, token_id, top_logprobs], ...]
     meta = resp.get("meta_info", {})
     logprob_data = meta.get("output_token_logprobs", [])
 
@@ -124,7 +116,6 @@ def generate_via_sglang(
             "text": text,
         }
 
-    # Fallback: top-level output_ids (no logprobs)
     output_ids = resp.get("output_ids", [])
     text = resp.get("text", "")
 
@@ -154,144 +145,150 @@ def run_rollout_worker(args):
     pending_dir = os.path.join(args.queue_dir, "pending")
     os.makedirs(pending_dir, exist_ok=True)
 
-    traj_id = 0
-    current_ckpt = get_latest_checkpoint(args.checkpoint_dir)  # Don't reload what's already loaded
-    rewards_recent = []
-    t0 = time.time()
-    worker_id = f"{int(time.time())}_{random.randint(1000,9999)}"
+    concurrency = getattr(args, "concurrency", 1)
+    hostname = socket.gethostname()
+    print(f"Concurrency: {concurrency} (sglang will batch concurrent requests)")
 
-    while traj_id < args.max_trajectories:
-        latest_ckpt = get_latest_checkpoint(args.checkpoint_dir)
-        if latest_ckpt != current_ckpt:
-            if latest_ckpt is not None:
-                hostname = socket.gethostname()
-                print(f"\n[worker] New checkpoint detected: {latest_ckpt}")
-                print(f"[worker] Writing reload signal for sglang daemon...")
+    state = {"traj_id": 0, "rewards": [], "t0": time.time(), "total": 0}
+    lock = threading.Lock()
+    worker_id = f"{int(time.time())}_{random.randint(1000,9999)}"
+    current_ckpt = get_latest_checkpoint(args.checkpoint_dir)
+
+    def generate_one():
+        local_ckpt = current_ckpt
+        while True:
+            with lock:
+                tid = state["traj_id"]
+                if tid >= args.max_trajectories:
+                    return
+                state["traj_id"] += 1
+
+            latest_ckpt = get_latest_checkpoint(args.checkpoint_dir)
+            if latest_ckpt != local_ckpt and latest_ckpt is not None:
                 signal_file = os.path.join(args.checkpoint_dir, f".reload_signal_{hostname}")
                 reload_done = os.path.join(args.checkpoint_dir, f".reload_done_{hostname}")
                 if os.path.exists(reload_done):
                     os.remove(reload_done)
                 with open(signal_file, "w") as f:
                     f.write(str(time.time()))
-                print(f"[worker] Waiting for sglang to reload (up to 30 min)...")
                 for _ in range(600):
                     if os.path.exists(reload_done):
-                        current_ckpt = latest_ckpt
-                        print(f"[worker] sglang reloaded ✓")
                         break
                     time.sleep(3)
-                else:
-                    print(f"[worker] WARNING: reload timeout, continuing with old model")
-                    current_ckpt = latest_ckpt
+                local_ckpt = latest_ckpt
 
-        sample = random.choice(data)
-        gt = sample.get("label") or sample.get("answer") or ""
-        prompt_text = sample["input"]
+            sample = random.choice(data)
+            gt = sample.get("label") or sample.get("answer") or ""
+            prompt_text = sample["input"]
 
-        messages = [{"role": "user", "content": prompt_text}]
-        if getattr(args, "enable_tir", False):
-            from .tir_rollout import TIR_SYSTEM_PROMPT
-            messages = [
-                {"role": "system", "content": TIR_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt_text},
-            ]
-        full_prompt = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        prompt_ids = tokenizer(full_prompt, add_special_tokens=False)["input_ids"]
-
-        if getattr(args, "enable_tir", False):
-            # TIR mode: multi-turn with Python code execution
-            from .tir_rollout import generate_tir_trajectory
-            result = generate_tir_trajectory(
-                port=args.sglang_port,
-                prompt_ids=prompt_ids,
-                tokenizer=tokenizer,
-                host=args.sglang_host,
-                max_turns=args.tir_max_turns,
-                max_new_tokens=args.tir_max_tokens_per_turn,
-                temperature=args.temperature,
-                top_p=args.top_p,
-                code_timeout=args.tir_code_timeout,
-                context_limit=args.max_seq_len,
+            messages = [{"role": "user", "content": prompt_text}]
+            if getattr(args, "enable_tir", False):
+                from .tir_rollout import TIR_SYSTEM_PROMPT
+                messages = [
+                    {"role": "system", "content": TIR_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt_text},
+                ]
+            full_prompt = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
             )
-            resp_ids = result["resp_ids"]
-            output_logprobs = result["token_logprobs"]
-            text = result["text"]
-            action_mask = result["action_mask"]
-            n_code = result["n_code_exec"]
-        else:
-            # Standard single-turn generation
-            result = generate_via_sglang(
-                port=args.sglang_port,
-                prompt_ids=prompt_ids,
-                host=args.sglang_host,
-                temperature=args.temperature,
-                top_p=args.top_p,
-                max_new_tokens=args.max_new_tokens,
-            )
-            if result is None:
-                time.sleep(5)
-                continue
-            resp_ids = result.get("output_ids", [])
-            output_logprobs = result.get("output_logprobs", [])
-            text = result.get("text", "")
-            action_mask = None
-            n_code = 0
+            prompt_ids = tokenizer(full_prompt, add_special_tokens=False)["input_ids"]
 
-            if not resp_ids:
-                resp_text = text or ""
-                resp_ids = tokenizer(resp_text, add_special_tokens=False)["input_ids"]
-                output_logprobs = [0.0] * len(resp_ids)
-
-        reward = math_reward(text, gt)
-
-        total_len = len(prompt_ids) + len(resp_ids)
-        if total_len > args.max_seq_len:
-            excess = total_len - args.max_seq_len
-            if excess < len(prompt_ids):
-                prompt_ids = prompt_ids[excess:]
+            if getattr(args, "enable_tir", False):
+                from .tir_rollout import generate_tir_trajectory
+                result = generate_tir_trajectory(
+                    port=args.sglang_port,
+                    prompt_ids=prompt_ids,
+                    tokenizer=tokenizer,
+                    host=args.sglang_host,
+                    max_turns=args.tir_max_turns,
+                    max_new_tokens=args.tir_max_tokens_per_turn,
+                    temperature=args.temperature,
+                    top_p=args.top_p,
+                    code_timeout=args.tir_code_timeout,
+                    context_limit=args.max_seq_len,
+                )
+                resp_ids = result["resp_ids"]
+                output_logprobs = result["token_logprobs"]
+                text = result["text"]
+                action_mask = result["action_mask"]
+                n_code = result["n_code_exec"]
             else:
-                resp_ids = resp_ids[:args.max_seq_len - len(prompt_ids)]
-                output_logprobs = output_logprobs[:len(resp_ids)]
+                result = generate_via_sglang(
+                    port=args.sglang_port,
+                    prompt_ids=prompt_ids,
+                    host=args.sglang_host,
+                    temperature=args.temperature,
+                    top_p=args.top_p,
+                    max_new_tokens=args.max_new_tokens,
+                )
+                if result is None:
+                    time.sleep(5)
+                    continue
+                resp_ids = result.get("output_ids", [])
+                output_logprobs = result.get("output_logprobs", [])
+                text = result.get("text", "")
+                action_mask = None
+                n_code = 0
+                if not resp_ids:
+                    resp_text = text or ""
+                    resp_ids = tokenizer(resp_text, add_special_tokens=False)["input_ids"]
+                    output_logprobs = [0.0] * len(resp_ids)
 
-        traj = {
-            "id": traj_id,
-            "prompt_ids": prompt_ids,
-            "resp_ids": resp_ids,
-            "logprobs": output_logprobs,
-            "response_text": text,
-            "ground_truth": gt,
-            "reward": reward,
-            "timestamp": time.time(),
-            "resp_len": len(resp_ids),
-            "prompt_len": len(prompt_ids),
-            "action_mask": action_mask,
-            "n_code_exec": n_code,
-        }
-        traj_file = os.path.join(pending_dir, f"traj_{worker_id}_{traj_id:08d}.json")
-        tmp_file = traj_file + ".tmp"
-        with open(tmp_file, "w") as f:
-            json.dump(traj, f)
-        os.rename(tmp_file, traj_file)
+            reward = math_reward(text, gt)
 
-        rewards_recent.append(reward)
-        if len(rewards_recent) > 100:
-            rewards_recent.pop(0)
+            total_len = len(prompt_ids) + len(resp_ids)
+            if total_len > args.max_seq_len:
+                excess = total_len - args.max_seq_len
+                if excess < len(prompt_ids):
+                    prompt_ids = prompt_ids[excess:]
+                else:
+                    resp_ids = resp_ids[:args.max_seq_len - len(prompt_ids)]
+                    output_logprobs = output_logprobs[:len(resp_ids)]
 
-        avg_r = sum(rewards_recent) / len(rewards_recent)
-        elapsed = time.time() - t0
-        rate = (traj_id + 1) / max(elapsed, 1) * 60
+            traj = {
+                "id": tid,
+                "prompt_ids": prompt_ids,
+                "resp_ids": resp_ids,
+                "logprobs": output_logprobs,
+                "response_text": text,
+                "ground_truth": gt,
+                "reward": reward,
+                "timestamp": time.time(),
+                "resp_len": len(resp_ids),
+                "prompt_len": len(prompt_ids),
+                "action_mask": action_mask,
+                "n_code_exec": n_code,
+            }
+            traj_file = os.path.join(pending_dir, f"traj_{worker_id}_{tid:08d}.json")
+            tmp_file = traj_file + ".tmp"
+            with open(tmp_file, "w") as f:
+                json.dump(traj, f)
+            os.rename(tmp_file, traj_file)
 
-        if traj_id % 10 == 0 or reward > 0:
-            print(f"  [{traj_id}] r={reward} avg100={avg_r:.2f} "
-                  f"len={len(resp_ids)} rate={rate:.1f}/min "
-                  f"elapsed={elapsed/60:.1f}min")
+            with lock:
+                state["rewards"].append(reward)
+                if len(state["rewards"]) > 100:
+                    state["rewards"].pop(0)
+                state["total"] += 1
+                total = state["total"]
+                avg_r = sum(state["rewards"]) / len(state["rewards"])
+                elapsed = time.time() - state["t0"]
 
-        traj_id += 1
+            if total % 10 == 0:
+                rate = total / max(elapsed, 1) * 60
+                print(f"  [{hostname}:{tid}] total={total} avg100={avg_r:.2f} "
+                      f"rate={rate:.1f}/min elapsed={elapsed/60:.1f}min")
 
-    print(f"\n[worker] Done. Generated {traj_id} trajectories "
-          f"in {(time.time()-t0)/60:.1f} min, avg reward={avg_r:.3f}")
+    threads = [threading.Thread(target=generate_one, daemon=True) for _ in range(concurrency)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    elapsed = time.time() - state["t0"]
+    avg_r = sum(state["rewards"]) / max(len(state["rewards"]), 1)
+    print(f"\n[worker:{hostname}] Done. {state['total']} trajectories "
+          f"in {elapsed/60:.1f} min, avg reward={avg_r:.3f}")
 
 
 def main():
@@ -307,6 +304,8 @@ def main():
     parser.add_argument("--max-new-tokens", type=int, default=32768)
     parser.add_argument("--max-seq-len", type=int, default=32768)
     parser.add_argument("--max-trajectories", type=int, default=100000)
+    parser.add_argument("--concurrency", type=int, default=1,
+                        help="Number of concurrent trajectory generation threads")
     parser.add_argument("--enable-tir", action="store_true",
                         help="Enable Tool-Integrated Reasoning (Python code execution)")
     parser.add_argument("--tir-max-turns", type=int, default=20,
