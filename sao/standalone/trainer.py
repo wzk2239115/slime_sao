@@ -120,7 +120,9 @@ def run_trainer(args):
         trust_remote_code=True,
         attn_implementation="flash_attention_2",
     )
-    actor.gradient_checkpointing_enable()
+    actor.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs={"use_reentrant": False}
+    )
     actor.config.use_cache = False
 
     actor_optimizer = create_optimizer(
@@ -138,7 +140,9 @@ def run_trainer(args):
         trust_remote_code=True,
         attn_implementation="flash_attention_2",
     )
-    base_critic.gradient_checkpointing_enable()
+    base_critic.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs={"use_reentrant": False}
+    )
     base_critic.config.use_cache = False
 
     critic = ValueModel(base_critic, hidden_size=actor.config.hidden_size)
