@@ -235,6 +235,14 @@ def run_trainer(args):
             action_masks=masks_for_gae,
         )
 
+        # Explained Variance (paper §4.4 Figure 4a)
+        try:
+            all_ret = torch.cat([r.flatten() for r in returns_list])
+            all_val = torch.cat([v.flatten() for v in values_list])
+            explained_variance = (1.0 - (all_ret - all_val).var() / all_ret.var().clamp(min=1e-8)).item()
+        except Exception:
+            explained_variance = 0.0
+
         # ---- Actor step (DIS) — gradient accumulation, 1 sample at a time ----
         actor.train()
         gc.collect()
@@ -318,6 +326,7 @@ def run_trainer(args):
         print(f"[{bar}] {step}/{args.num_steps} ({pct:.0%}) | "
               f"r={mean_reward:.2f}(avg20={recent_r:.2f}) "
               f"al={actor_metrics.get('loss',0):.4f} cl={critic_loss_val:.4f} "
+              f"ev={explained_variance:+.2f} "
               f"clip={actor_metrics.get('clip_ratio',0):.0%} "
               f"ratio={actor_metrics.get('mean_ratio',0):.3f} | "
               f"{avg_step:.0f}s/step ETA={eta/3600:.1f}h "
