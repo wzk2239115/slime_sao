@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import random
+import socket
 import time
 
 from .rollout import _post
