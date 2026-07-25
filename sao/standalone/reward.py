@@ -57,7 +57,8 @@ def normalize_answer(ans: str) -> str:
     except Exception:
         pass
 
-    return ans
+    # Fallback: if normalization produced empty, return original
+    return ans if len(ans) > 0 else str.strip()
 
 
 def math_reward(response: str | None, ground_truth: str) -> float:
