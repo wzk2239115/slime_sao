@@ -88,8 +88,8 @@ def start_sglang_proc(model_path, num_gpu, log_file):
 def reload_watcher(state, hostname, num_gpu, log_file):
     """Background thread: watch for .reload_signal, restart sglang with new checkpoint."""
     ckpt_dir = f"{WORKDIR}/checkpoints/sao"
-    signal_file = f"{ckpt_dir}/.reload_signal"
-    done_file = f"{ckpt_dir}/.reload_done"
+    signal_file = f"{ckpt_dir}/.reload_signal_{hostname}"
+    done_file = f"{ckpt_dir}/.reload_done_{hostname}"
     while True:
         time.sleep(10)
         if os.path.exists(signal_file):
@@ -178,6 +178,10 @@ def start_inference():
         return
 
     # Start reload watcher (background thread)
+    # Clear stale signals for this hostname
+    for f in [f".reload_signal_{hostname}", f".reload_done_{hostname}"]:
+        try: os.remove(f"{WORKDIR}/checkpoints/sao/{f}")
+        except FileNotFoundError: pass
     state = {"sglang": sglang}
     watcher = threading.Thread(
         target=reload_watcher, args=(state, hostname, num_gpu, log_sglang), daemon=True

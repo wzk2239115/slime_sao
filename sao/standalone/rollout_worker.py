@@ -163,10 +163,11 @@ def run_rollout_worker(args):
         latest_ckpt = get_latest_checkpoint(args.checkpoint_dir)
         if latest_ckpt != current_ckpt:
             if latest_ckpt is not None:
+                hostname = socket.gethostname()
                 print(f"\n[worker] New checkpoint detected: {latest_ckpt}")
                 print(f"[worker] Writing reload signal for sglang daemon...")
-                signal_file = os.path.join(args.checkpoint_dir, ".reload_signal")
-                reload_done = os.path.join(args.checkpoint_dir, ".reload_done")
+                signal_file = os.path.join(args.checkpoint_dir, f".reload_signal_{hostname}")
+                reload_done = os.path.join(args.checkpoint_dir, f".reload_done_{hostname}")
                 if os.path.exists(reload_done):
                     os.remove(reload_done)
                 with open(signal_file, "w") as f:
