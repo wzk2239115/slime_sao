@@ -116,6 +116,9 @@ def reload_watcher(state, hostname, num_gpu, log_file):
             else:
                 with open(done_file, "w") as f: f.write(str(time.time()))
                 print(f"[watcher] reload FAILED, unblocked anyway", flush=True)
+
+
+def check_health(host="127.0.0.1", port=PORT):
     """Check sglang health."""
     import urllib.request
     try:
