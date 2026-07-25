@@ -88,13 +88,21 @@ def format_observation(output: str) -> str:
 # ============================================================
 # Multi-Turn TIR Generation
 # ============================================================
+TIR_SYSTEM_PROMPT = (
+    "You are a mathematical reasoning assistant. Solve the problem step by step. "
+    "When you need to perform exact calculations, write Python code in ```python blocks. "
+    "The code will be executed and the output shown to you. "
+    "Always put your final numerical answer in \\boxed{}."
+)
+
+
 def generate_tir_trajectory(
     port: int,
     prompt_ids: list[int],
     tokenizer,
     host: str = "127.0.0.1",
     max_turns: int = 20,
-    max_new_tokens: int = 2048,
+    max_new_tokens: int = 4096,
     temperature: float = 1.0,
     top_p: float = 1.0,
     code_timeout: int = 10,

@@ -31,7 +31,8 @@ def normalize_answer(ans: str) -> str:
     """Normalize a math answer string for comparison."""
     original = ans.strip()
     ans = original
-    # Remove LaTeX backslash commands: \sqrt → sqrt, \frac → frac
+    # Normalize LaTeX commands: \dfrac → \frac, then strip backslashes
+    ans = ans.replace("dfrac", "frac")
     ans = ans.replace("\\", "")
     # Remove whitespace, braces, dollar signs, percent
     ans = ans.replace(" ", "")

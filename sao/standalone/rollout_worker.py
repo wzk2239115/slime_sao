@@ -189,6 +189,12 @@ def run_rollout_worker(args):
         prompt_text = sample["input"]
 
         messages = [{"role": "user", "content": prompt_text}]
+        if getattr(args, "enable_tir", False):
+            from .tir_rollout import TIR_SYSTEM_PROMPT
+            messages = [
+                {"role": "system", "content": TIR_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt_text},
+            ]
         full_prompt = tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
@@ -305,7 +311,7 @@ def main():
                         help="Enable Tool-Integrated Reasoning (Python code execution)")
     parser.add_argument("--tir-max-turns", type=int, default=20,
                         help="Max code execution turns for TIR")
-    parser.add_argument("--tir-max-tokens-per-turn", type=int, default=2048)
+    parser.add_argument("--tir-max-tokens-per-turn", type=int, default=4096)
     parser.add_argument("--tir-code-timeout", type=int, default=10)
     args = parser.parse_args()
     run_rollout_worker(args)

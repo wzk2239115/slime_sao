@@ -84,7 +84,14 @@ def main():
         print()
 
         # Build prompt
-        messages = [{"role": "user", "content": problem}]
+        if enable_tir:
+            from sao.standalone.tir_rollout import TIR_SYSTEM_PROMPT
+            messages = [
+                {"role": "system", "content": TIR_SYSTEM_PROMPT},
+                {"role": "user", "content": problem},
+            ]
+        else:
+            messages = [{"role": "user", "content": problem}]
         prompt_text = tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
@@ -99,7 +106,7 @@ def main():
                 prompt_ids=prompt_ids,
                 tokenizer=tokenizer,
                 max_turns=20,
-                max_new_tokens=2048,
+                max_new_tokens=4096,
                 temperature=1.0,
                 top_p=1.0,
                 code_timeout=10,
