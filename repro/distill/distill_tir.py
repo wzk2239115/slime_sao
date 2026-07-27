@@ -28,14 +28,12 @@ import os
 import re
 import sys
 import time
+import subprocess
+import tempfile
 import traceback
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-
 import httpx
-
-from examples.retool.tool_sandbox import PythonSandbox
 
 # =========================================================================
 # 1. 常量
@@ -70,45 +68,82 @@ PYTHON_TOOL = {
 
 
 # =========================================================================
-# 2. 扩展 sandbox: 允许 numpy, sympy, scipy
+# 2. Standalone sandbox: subprocess 执行 python, 安全过滤, 无外部依赖
 # =========================================================================
-class ExtendedSandbox(PythonSandbox):
-    def __init__(self, timeout=30, memory_limit="4GB"):
-        super().__init__(timeout=timeout, memory_limit=memory_limit)
-        self.allowed_modules = {
-            "math", "random", "datetime", "collections", "itertools",
-            "functools", "operator", "statistics", "decimal", "fractions",
-            "numpy", "np", "sympy", "sp", "scipy", "re", "string",
-            "typing", "dataclasses", "abc", "copy", "heapq",
-            "bisect", "cmath", "numbers",
-        }
+class Sandbox:
+    """Self-contained Python sandbox via subprocess. No slime dependency."""
 
-    def _check_code_safety(self, code: str) -> tuple[bool, str]:
-        dangerous = [
-            r"import\s+os\b",
-            r"import\s+sys\b",
-            r"import\s+subprocess",
-            r"import\s+shutil",
-            r"import\s+socket",
-            r"import\s+threading",
-            r"import\s+multiprocessing",
-            r"import\s+ctypes",
-            r"__import__",
-            r"\beval\s*\(",
-            r"\bexec\s*\(",
-            r"\bopen\s*\(",
-            r"\bcompile\s*\(",
-            r"__\w+__",
-        ]
-        for pat in dangerous:
+    ALLOWED = {
+        "math", "random", "datetime", "collections", "itertools",
+        "functools", "operator", "statistics", "decimal", "fractions",
+        "numpy", "sympy", "scipy", "re", "string", "typing",
+        "dataclasses", "abc", "copy", "heapq", "bisect", "cmath", "numbers",
+    }
+
+    DANGEROUS = [
+        r"import\s+os\b", r"import\s+sys\b", r"import\s+subprocess",
+        r"import\s+shutil", r"import\s+socket", r"import\s+threading",
+        r"import\s+multiprocessing", r"import\s+ctypes",
+        r"__import__", r"\beval\s*\(", r"\bexec\s*\(",
+        r"\bopen\s*\(", r"\bcompile\s*\(", r"__\w+__",
+    ]
+
+    def __init__(self, timeout=30):
+        self.timeout = timeout
+
+    def _check(self, code: str) -> tuple[bool, str]:
+        for pat in self.DANGEROUS:
             if re.search(pat, code):
-                return False, f"Blocked pattern: {pat}"
-
+                return False, f"Blocked: {pat}"
         imports = re.findall(r"import\s+(\w+)", code) + re.findall(r"from\s+(\w+)", code)
         for imp in set(imports):
-            if imp not in self.allowed_modules:
+            if imp not in self.ALLOWED:
                 return False, f"Module '{imp}' not allowed"
         return True, "ok"
+
+    async def execute_code(self, code: str) -> str:
+        ok, msg = self._check(code)
+        if not ok:
+            return f"Error: {msg}"
+
+        indented = "\n".join("    " + line for line in code.split("\n"))
+        wrapped = f'''import sys, traceback, resource
+from io import StringIO
+try:
+    resource.setrlimit(resource.RLIMIT_AS, (4 * 1024 * 1024 * 1024, -1))
+except Exception:
+    pass
+_old = sys.stdout, sys.stderr
+_so, _se = StringIO(), StringIO()
+sys.stdout, sys.stderr = _so, _se
+try:
+{indented}
+    sys.stdout, sys.stderr = _old
+    out = _so.getvalue() + _se.getvalue()
+    print(out if out.strip() else "(no output)")
+except Exception as e:
+    sys.stdout, sys.stderr = _old
+    print(f"Error: {{e}}")'''
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+            f.write(wrapped)
+            tmp = f.name
+
+        try:
+            proc = subprocess.Popen(
+                ["python3", tmp],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True,
+            )
+            stdout, stderr = proc.communicate(timeout=self.timeout)
+            result = stdout.strip() if proc.returncode == 0 else f"Error: exit {proc.returncode}\n{stderr.strip()}"
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            result = f"Error: timeout ({self.timeout}s)"
+        finally:
+            os.unlink(tmp)
+
+        return result
 
 
 # =========================================================================
@@ -207,7 +242,7 @@ async def call_glm52(
 async def distill_one(
     client: httpx.AsyncClient,
     api_key: str,
-    sandbox: ExtendedSandbox,
+    sandbox: Sandbox,
     problem: str,
     label: str,
     *,
@@ -296,7 +331,7 @@ async def distill_batch(
     done_keys: set[str],
 ) -> tuple[int, int, int]:
     sem = asyncio.Semaphore(concurrency)
-    sandbox = ExtendedSandbox(timeout=30, memory_limit="4GB")
+    sandbox = Sandbox(timeout=30)
     success = 0
     fail = 0
     correct_count = 0
