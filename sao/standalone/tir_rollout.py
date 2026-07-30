@@ -20,7 +20,10 @@ import subprocess
 import tempfile
 import time
 
-from .rollout import _post
+try:
+    from .rollout import _post
+except ImportError:
+    from rollout import _post
 
 
 # ============================================================

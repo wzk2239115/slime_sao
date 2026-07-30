@@ -26,7 +26,7 @@ import threading
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from transformers import AutoTokenizer
 from tir_rollout import generate_tir_trajectory, TIR_SYSTEM_PROMPT
