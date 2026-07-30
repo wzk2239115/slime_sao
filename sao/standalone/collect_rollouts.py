@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""用 Qwen3 自己的 sglang 批量生成 TIR 轨迹，用于 SFT + value pretraining。
+"""用 Qwen3 base model 的 sglang 批量生成 TIR 轨迹，用于 SFT + value pretraining。
 
 这是自蒸馏：用目标模型自己生成训练数据。
 产出格式和 RL rollout 完全一致（prompt_ids, resp_ids, action_mask, logprobs, reward）。
+sandbox 无 import 限制（sympy/numpy 都能用）。
 
 用法（在算力机上）:
-    # 1. 先启动 sglang（用 step_1000 或 base model）
-    ENABLE_TIR=0 python3 sao/standalone/launch.py inference
+    # 1. 启动 sglang（base model）
+    BASH_ENV= python3 sao/standalone/launch.py inference
 
-    # 2. 跑批量 rollout
+    # 2. 跑批量 rollout（8卡H100 充分利用）
     BASH_ENV= python3 sao/standalone/collect_rollouts.py \
         --data datasets/MATH_train.jsonl \
         --output datasets/self_distill/rollouts.jsonl \
         --samples-per-problem 2 \
-        --concurrency 8
+        --concurrency 20
 """
 
 import argparse
@@ -91,11 +92,13 @@ def main():
     ap.add_argument("--model", default=None, help="tokenizer 路径（默认从 sglang 推断）")
     ap.add_argument("--port", type=int, default=30000)
     ap.add_argument("--samples-per-problem", type=int, default=2, help="每题采样几条")
-    ap.add_argument("--concurrency", type=int, default=8, help="并发线程数")
+    ap.add_argument("--concurrency", type=int, default=20, help="并发线程数（8卡H100建议20-30）")
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--max-turns", type=int, default=10)
     ap.add_argument("--max-new-tokens", type=int, default=4096)
     ap.add_argument("--max-samples", type=int, default=None, help="只处理前 N 题（调试）")
+    ap.add_argument("--shard", type=int, default=0, help="分片: 当前第几片 (0-indexed)")
+    ap.add_argument("--num-shards", type=int, default=1, help="分片: 总共几片（多机并行）")
     args = ap.parse_args()
 
     # tokenizer
@@ -116,6 +119,11 @@ def main():
                 problems.append(json.loads(line))
     if args.max_samples:
         problems = problems[: args.max_samples]
+
+    # 分片（多机并行）
+    if args.num_shards > 1:
+        problems = [p for i, p in enumerate(problems) if i % args.num_shards == args.shard]
+        print(f"分片 {args.shard}/{args.num_shards}: 本机负责 {len(problems)} 题")
 
     # 展开成 samples_per_problem 条任务
     tasks = []
