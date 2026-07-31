@@ -25,11 +25,13 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
-def load_data(path: str, correct_only: bool = True):
+def load_data(path: str, correct_only: bool = True, require_code: bool = True):
     data = []
     for line in open(path):
         d = json.loads(line.strip())
         if correct_only and d.get("reward", 0) <= 0:
+            continue
+        if require_code and d.get("n_code_exec", 0) <= 0:
             continue
         total_len = len(d["prompt_ids"]) + len(d["resp_ids"])
         if total_len > 30000:
@@ -49,14 +51,16 @@ def main():
     ap.add_argument("--accum-steps", type=int, default=8)
     ap.add_argument("--max-grad-norm", type=float, default=1.0)
     ap.add_argument("--save-every", type=int, default=500)
+    ap.add_argument("--no-require-code", action="store_true", help="允许无Python的正确轨迹")
     args = ap.parse_args()
 
     from transformers import AutoTokenizer, AutoModelForCausalLM
 
     # 数据
     print("Loading data...")
-    data = load_data(args.data, correct_only=True)
-    print(f"  {len(data)} correct trajectories")
+    require_code = not args.no_require_code
+    data = load_data(args.data, correct_only=True, require_code=require_code)
+    print(f"  {len(data)} trajectories (correct + has Python)")
 
     # tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
