@@ -100,13 +100,23 @@ def main():
 
     first_device = next(critic.parameters()).device
 
-    # 计算 explained variance
-    def explained_variance(values, targets):
-        var_values = values.var()
-        var_targets = targets.var()
-        if var_targets < 1e-8:
-            return torch.tensor(0.0)
-        return 1.0 - var_values / var_targets
+    # 跨轨迹 buffer: 用于计算 meaningful EV
+    ev_buffer_v = []  # 每条轨迹最后一个 token 的 V(s_T)
+    ev_buffer_r = []  # 对应的 reward
+
+    def flush_ev():
+        if len(ev_buffer_v) < 10:
+            return None
+        vs = torch.stack(ev_buffer_v)
+        rs = torch.tensor(ev_buffer_r, device=vs.device, dtype=vs.dtype)
+        var_diff = (rs - vs).var()
+        var_r = rs.var()
+        if var_r < 1e-8:
+            return None
+        ev = 1.0 - var_diff / var_r
+        ev_buffer_v.clear()
+        ev_buffer_r.clear()
+        return ev.item()
 
     # 训练
     step = 0
@@ -118,7 +128,6 @@ def main():
         random.shuffle(data)
 
         epoch_loss = 0.0
-        epoch_ev = 0.0
         epoch_n = 0
 
         for i, sample in enumerate(data):
@@ -138,18 +147,18 @@ def main():
             target = torch.full_like(resp_values, reward)
 
             # MSE loss
+
+            # MSE loss
             loss = nn.functional.mse_loss(resp_values, target)
             loss_scaled = loss / args.accum_steps
             loss_scaled.backward()
 
             epoch_loss += loss.item()
-
-            # EV (batch size 1, 所以只看单个轨迹的预测方差)
-            with torch.no_grad():
-                ev = explained_variance(resp_values.detach(), target)
-                epoch_ev += ev.item()
-
             epoch_n += 1
+
+            # 收集 V(s_T) 和 reward 用于跨轨迹 EV
+            ev_buffer_v.append(resp_values[-1].detach().float().cpu())
+            ev_buffer_r.append(reward)
 
             if (i + 1) % args.accum_steps == 0:
                 torch.nn.utils.clip_grad_norm_(trainable, args.max_grad_norm)
@@ -159,9 +168,10 @@ def main():
 
                 if step % 10 == 0:
                     avg_loss = epoch_loss / max(epoch_n, 1)
-                    avg_ev = epoch_ev / max(epoch_n, 1)
+                    ev = flush_ev()
+                    ev_str = f"ev={ev:.4f}" if ev is not None else "ev=..."
                     print(f"  epoch {epoch+1}/{args.epochs} step {step} "
-                          f"[{i+1}/{len(data)}] mse={avg_loss:.4f} ev={avg_ev:.4f}")
+                          f"[{i+1}/{len(data)}] mse={avg_loss:.4f} {ev_str}")
 
                 if step % args.save_every == 0:
                     ckpt = f"{args.output}/step_{step}"
@@ -174,8 +184,9 @@ def main():
         # epoch end
         ckpt = f"{args.output}/epoch_{epoch+1}"
         avg_loss = epoch_loss / max(epoch_n, 1)
-        avg_ev = epoch_ev / max(epoch_n, 1)
-        print(f"\nEpoch {epoch+1} done. mse={avg_loss:.4f} ev={avg_ev:.4f}. Saving {ckpt}...")
+        ev = flush_ev()
+        ev_str = f"ev={ev:.4f}" if ev is not None else "ev=..."
+        print(f"\nEpoch {epoch+1} done. mse={avg_loss:.4f} {ev_str}. Saving {ckpt}...")
         critic.model.save_pretrained(ckpt, safe_serialization=True)
         tokenizer.save_pretrained(ckpt)
         torch.save(critic.value_head.state_dict(), f"{ckpt}/value_head.pt")
