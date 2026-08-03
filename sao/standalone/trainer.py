@@ -36,10 +36,16 @@ import time
 import torch
 import torch.nn as nn
 
-from .grpo_step import compute_log_probs, dis_policy_loss
-from .critic import (
-    ValueModel, compute_values, compute_gae_batch, train_critic_step,
-)
+try:
+    from .grpo_step import compute_log_probs, dis_policy_loss
+    from .critic import (
+        ValueModel, compute_values, compute_gae_batch, train_critic_step,
+    )
+except ImportError:
+    from grpo_step import compute_log_probs, dis_policy_loss
+    from critic import (
+        ValueModel, compute_values, compute_gae_batch, train_critic_step,
+    )
 
 
 def poll_queue(queue_dir: str, max_items: int = 128) -> list[dict]:
