@@ -146,6 +146,16 @@ def run_trainer(args):
     base_critic.config.use_cache = False
 
     critic = ValueModel(base_critic, hidden_size=actor.config.hidden_size)
+
+    # 加载预训练 value head（如果存在）
+    vh_path = os.path.join(args.critic_path, "value_head.pt")
+    if os.path.exists(vh_path):
+        vh_state = torch.load(vh_path, map_location="cpu")
+        critic.value_head.load_state_dict(vh_state)
+        print(f"  ✅ Loaded pretrained value_head from {vh_path}")
+    else:
+        print(f"  ⚠️ No pretrained value_head at {vh_path}, using random init")
+
     critic.freeze_attention()
 
     critic_params = [p for p in critic.parameters() if p.requires_grad]
