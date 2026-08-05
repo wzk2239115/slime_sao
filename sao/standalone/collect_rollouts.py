@@ -61,7 +61,7 @@ def collect_one(
             temperature=temperature,
             top_p=1.0,
             code_timeout=10,
-            context_limit=32000,
+            context_limit=131072,
             logprobs=True,
         )
     except Exception as e:
