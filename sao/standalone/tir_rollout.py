@@ -120,11 +120,11 @@ def generate_tir_trajectory(
     tokenizer,
     host: str = "127.0.0.1",
     max_turns: int = 20,
-    max_new_tokens: int = 4096,
+    max_new_tokens: int = 32768,
     temperature: float = 1.0,
     top_p: float = 1.0,
     code_timeout: int = 10,
-    context_limit: int = 34000,
+    context_limit: int = 131072,
     logprobs: bool = True,
 ) -> dict:
     """Generate a multi-turn TIR trajectory.

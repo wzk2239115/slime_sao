@@ -397,7 +397,7 @@ def main():
                         help="TTUR K (paper: 2)")
     parser.add_argument("--critic-warmup", type=int, default=10,
                         help="Critic warmup steps (paper: 10)")
-    parser.add_argument("--max-seq-len", type=int, default=32768)
+    parser.add_argument("--max-seq-len", type=int, default=131072)
     parser.add_argument("--save-interval", type=int, default=50)
     parser.add_argument("--use-8bit-adam", action="store_true", default=True,
                         help="Use 8-bit AdamW for memory efficiency")

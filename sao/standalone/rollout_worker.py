@@ -302,7 +302,7 @@ def main():
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--max-new-tokens", type=int, default=32768)
-    parser.add_argument("--max-seq-len", type=int, default=32768)
+    parser.add_argument("--max-seq-len", type=int, default=131072)
     parser.add_argument("--max-trajectories", type=int, default=100000)
     parser.add_argument("--concurrency", type=int, default=1,
                         help="Number of concurrent trajectory generation threads")
@@ -310,7 +310,7 @@ def main():
                         help="Enable Tool-Integrated Reasoning (Python code execution)")
     parser.add_argument("--tir-max-turns", type=int, default=20,
                         help="Max code execution turns for TIR")
-    parser.add_argument("--tir-max-tokens-per-turn", type=int, default=4096)
+    parser.add_argument("--tir-max-tokens-per-turn", type=int, default=32768)
     parser.add_argument("--tir-code-timeout", type=int, default=10)
     args = parser.parse_args()
     run_rollout_worker(args)

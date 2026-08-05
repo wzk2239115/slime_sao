@@ -78,7 +78,7 @@ def start_sglang_proc(model_path, num_gpu, log_file):
          "--host", "0.0.0.0", "--port", str(PORT),
          "--tp", str(num_gpu),
          "--mem-fraction-static", "0.85",
-         "--context-length", "36864",
+         "--context-length", "131072",
          "--disable-custom-all-reduce",
          "--reasoning-parser", "qwen3"] + cg_flag,
         stdout=open(log_file, "a"), stderr=subprocess.STDOUT,
